@@ -17,6 +17,7 @@
 		"manage.ts",
 		"tui.ts",
 		"README.md",
+		"README.zh.md",
 		"LICENSE"
 	],
 	"peerDependencies": {
