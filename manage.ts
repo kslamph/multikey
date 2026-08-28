@@ -5,7 +5,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { maskKey, type KeypoolConfig, type PoolConfig, type PoolKeyConfig, type PoolModelConfig } from "./config.ts";
 import type { KeyPool } from "./pool.ts";
-import { findPreset, poolFromPreset, type Preset } from "./presets.ts";
+import { PRESETS, findPreset, poolFromPreset, type Preset } from "./presets.ts";
 import { inputNumber, pickMany, selectOne, showInfo } from "./tui.ts";
 
 type CommandContext = Parameters<Parameters<ExtensionAPI["registerCommand"]>[1]["handler"]>[1];
