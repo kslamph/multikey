@@ -1,0 +1,273 @@
+/**
+ * TUI helpers in the npm:better-custom style: searchable single-select list,
+ * read-only info panel, built on ctx.ui.custom + @earendil-works/pi-tui.
+ */
+
+import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+
+export interface SelectItem {
+	value: string;
+	label: string;
+	suffix?: string;
+	description?: string;
+}
+
+type CommandContext = Parameters<Parameters<import("@earendil-works/pi-coding-agent").ExtensionAPI["registerCommand"]>[1]["handler"]>[1];
+
+export async function selectOne(
+	ctx: CommandContext,
+	title: string,
+	items: SelectItem[],
+	options?: { initialIndex?: number },
+): Promise<string | null> {
+	if (items.length === 0) return null;
+
+	return await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+		let cursor = Math.max(0, Math.min(options?.initialIndex ?? 0, items.length - 1));
+		let query = "";
+		let cachedLines: string[] | undefined;
+		const maxVisible = 12;
+
+		function visible(): SelectItem[] {
+			const q = query.trim().toLowerCase();
+			if (!q) return items;
+			return items.filter((item) =>
+				`${item.label} ${item.suffix ?? ""} ${item.description ?? ""}`.toLowerCase().includes(q),
+			);
+		}
+
+		function refresh() {
+			const v = visible();
+			if (v.length === 0) cursor = 0;
+			else if (cursor >= v.length) cursor = v.length - 1;
+			cachedLines = undefined;
+			tui.requestRender();
+		}
+
+		return {
+			render(width: number) {
+				if (cachedLines) return cachedLines;
+				const v = visible();
+				const w = Math.max(10, width);
+				const lines: string[] = [];
+				const add = (line = "") => lines.push(truncateToWidth(line, w));
+				const border = theme.fg("accent", "─".repeat(w));
+
+				add(border);
+				add(` ${theme.fg("accent", theme.bold(title))}`);
+				add(` ${theme.fg("text", `Search: ${query || "-"}`)}`);
+				add();
+
+				if (v.length === 0) {
+					add(theme.fg("warning", " No matches."));
+				} else {
+					const start = Math.max(0, Math.min(cursor - Math.floor(maxVisible / 2), Math.max(0, v.length - maxVisible)));
+					const end = Math.min(v.length, start + maxVisible);
+					for (let i = start; i < end; i++) {
+						const item = v[i]!;
+						const active = i === cursor;
+						const prefix = active ? theme.fg("accent", "> ") : "  ";
+						const label = active ? theme.fg("accent", item.label) : theme.fg("text", item.label);
+						const suffix = item.suffix ? theme.fg("dim", item.suffix) : "";
+						add(`${prefix}${label}${suffix}`);
+						if (item.description) {
+							for (const line of item.description.split("\n")) {
+								add(`   ${theme.fg("muted", line)}`);
+							}
+						}
+					}
+					if (v.length > maxVisible) {
+						add();
+						add(theme.fg("dim", ` ${start + 1}-${end} of ${v.length}`));
+					}
+				}
+
+				add();
+				add(theme.fg("dim", " Type to search • ↑↓ move • enter confirm • backspace delete • esc cancel"));
+				add(border);
+
+				cachedLines = lines;
+				return lines;
+			},
+			invalidate() {
+				cachedLines = undefined;
+			},
+			handleInput(data: string) {
+				const v = visible();
+				if (matchesKey(data, Key.up)) {
+					if (v.length === 0) return;
+					cursor = cursor === 0 ? v.length - 1 : cursor - 1;
+					refresh();
+					return;
+				}
+				if (matchesKey(data, Key.down)) {
+					if (v.length === 0) return;
+					cursor = cursor === v.length - 1 ? 0 : cursor + 1;
+					refresh();
+					return;
+				}
+				if (matchesKey(data, Key.enter)) {
+					done(v[cursor]?.value ?? null);
+					return;
+				}
+				if (matchesKey(data, Key.escape)) {
+					done(null);
+					return;
+				}
+				if (data === "\u007f" || data === "\b") {
+					if (query.length > 0) {
+						query = query.slice(0, -1);
+						refresh();
+					}
+					return;
+				}
+				if (data >= " " && data !== "\u001b" && data !== "\r" && data !== "\n") {
+					query += data;
+					cursor = 0;
+					refresh();
+				}
+			},
+		};
+	});
+}
+
+export async function showInfo(ctx: CommandContext, title: string, lines: string[]): Promise<void> {
+	await ctx.ui.custom<void>((tui, theme, _kb, done) => {
+		let cachedLines: string[] | undefined;
+		return {
+			render(width: number) {
+				if (cachedLines) return cachedLines;
+				const w = Math.max(10, width);
+				const out: string[] = [];
+				const add = (line = "") => out.push(truncateToWidth(line, w));
+				const border = theme.fg("accent", "─".repeat(w));
+				add(border);
+				add(` ${theme.fg("accent", theme.bold(title))}`);
+				add();
+				for (const line of lines) add(` ${line}`);
+				add();
+				add(theme.fg("dim", " esc/enter close"));
+				add(border);
+				cachedLines = out;
+				return out;
+			},
+			invalidate() {
+				cachedLines = undefined;
+			},
+			handleInput(data: string) {
+				if (matchesKey(data, Key.escape) || matchesKey(data, Key.enter)) done();
+			},
+		};
+	});
+}
+
+/** Simple toggle list (multi-select), returns selected values or null on cancel. */
+export async function pickMany(ctx: CommandContext, title: string, items: SelectItem[]): Promise<string[] | null> {
+	return await ctx.ui.custom<string[] | null>((tui, theme, _kb, done) => {
+		let cursor = 0;
+		let query = "";
+		const selected = new Set<string>();
+		let cachedLines: string[] | undefined;
+		const maxVisible = 12;
+
+		function visible(): SelectItem[] {
+			const q = query.trim().toLowerCase();
+			if (!q) return items;
+			return items.filter((item) => `${item.label} ${item.description ?? ""}`.toLowerCase().includes(q));
+		}
+
+		function refresh() {
+			const v = visible();
+			if (v.length === 0) cursor = 0;
+			else if (cursor >= v.length) cursor = v.length - 1;
+			cachedLines = undefined;
+			tui.requestRender();
+		}
+
+		return {
+			render(width: number) {
+				if (cachedLines) return cachedLines;
+				const v = visible();
+				const w = Math.max(10, width);
+				const lines: string[] = [];
+				const add = (line = "") => lines.push(truncateToWidth(line, w));
+				const border = theme.fg("accent", "─".repeat(w));
+				add(border);
+				add(` ${theme.fg("accent", theme.bold(title))}`);
+				add(` ${theme.fg("text", `Search: ${query || "-"}`)}`);
+				add();
+				if (v.length === 0) {
+					add(theme.fg("warning", " No matches."));
+				} else {
+					for (let i = 0; i < Math.min(v.length, maxVisible); i++) {
+						const item = v[i]!;
+						const active = i === cursor;
+						const check = selected.has(item.value) ? theme.fg("accent", "✓") : " ";
+						const prefix = active ? theme.fg("accent", "> ") : "  ";
+						add(`${prefix}[${check}] ${active ? theme.fg("accent", item.label) : item.label}`);
+					}
+				}
+				add();
+				add(theme.fg("dim", " space toggle • enter confirm • esc cancel"));
+				add(border);
+				cachedLines = lines;
+				return lines;
+			},
+			invalidate() {
+				cachedLines = undefined;
+			},
+			handleInput(data: string) {
+				const v = visible();
+				if (matchesKey(data, Key.up)) {
+					if (v.length === 0) return;
+					cursor = cursor === 0 ? v.length - 1 : cursor - 1;
+					refresh();
+					return;
+				}
+				if (matchesKey(data, Key.down)) {
+					if (v.length === 0) return;
+					cursor = cursor === v.length - 1 ? 0 : cursor + 1;
+					refresh();
+					return;
+				}
+				if (data === " ") {
+					const item = v[cursor];
+					if (item) {
+						if (selected.has(item.value)) selected.delete(item.value);
+						else selected.add(item.value);
+						refresh();
+					}
+					return;
+				}
+				if (matchesKey(data, Key.enter)) {
+					done([...selected]);
+					return;
+				}
+				if (matchesKey(data, Key.escape)) {
+					done(null);
+					return;
+				}
+				if (data === "\u007f" || data === "\b") {
+					if (query.length > 0) {
+						query = query.slice(0, -1);
+						refresh();
+					}
+					return;
+				}
+				if (data >= " " && data !== "\u001b" && data !== "\r" && data !== "\n") {
+					query += data;
+					cursor = 0;
+					refresh();
+				}
+			},
+		};
+	});
+}
+
+export async function inputNumber(ctx: CommandContext, title: string, current: number): Promise<number | undefined> {
+	const raw = await ctx.ui.input(title, String(current));
+	if (raw === undefined || raw.trim() === "") return undefined;
+	const value = Number(raw.trim());
+	if (!Number.isFinite(value) || value <= 0) return undefined;
+	return value;
+}
