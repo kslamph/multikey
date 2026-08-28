@@ -1,0 +1,50 @@
+name: Release to npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# `id-token: write` is required for npm provenance (OIDC-based attestation).
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Verify tag matches package.json version
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package.json version ${PKG_VERSION}"
+            exit 1
+          fi
+          echo "Releasing v${PKG_VERSION}"
+
+      - name: Validate tarball contents
+        run: npm pack --dry-run
+
+      - name: Publish to npm
+        run: |
+          # Pre-release tags (v1.0.1-beta.1, v1.0.1-rc.1, ...) go to the `next`
+          # dist-tag so `latest` is never polluted by pre-releases.
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          DIST_TAG="latest"
+          case "$TAG_VERSION" in
+            *-alpha*|*-beta*|*-rc*|*-next*) DIST_TAG="next" ;;
+          esac
+          npm publish --provenance --access public --tag "$DIST_TAG"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
