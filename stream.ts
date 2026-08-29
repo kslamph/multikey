@@ -32,7 +32,7 @@ export type Notifier = (message: string) => void;
 
 export function createRotatingStreamSimple(pool: KeyPool, apiName: string, notify: Notifier) {
 	const impl = getApiProvider(apiName as Api);
-	if (!impl) throw new Error(`keypool: no API provider registered for api: ${apiName}`);
+	if (!impl) throw new Error(`multikey: no API provider registered for api: ${apiName}`);
 	// Auth style: "api-key" providers want the key in x-api-key (some reject
 	// Authorization entirely); bearer is the pi-ai default and needs no help.
 	const authStyle = pool.config.auth ?? "bearer";
@@ -85,7 +85,7 @@ export function createRotatingStreamSimple(pool: KeyPool, apiName: string, notif
 						lastProblem = verdict.problem;
 						pool.report(lease, verdict.outcome, verdict.outcome === "rate_limited" ? verdict.cooldownMs : undefined);
 						notify(
-							`keypool[${pool.config.id}]: ${verdict.outcome === "rate_limited" ? "429" : "auth error"} on ${lease.label} (${pool.mask(lease.key)}), rotating to another key`,
+							`multikey[${pool.config.id}]: ${verdict.outcome === "rate_limited" ? "429" : "auth error"} on ${lease.label} (${pool.mask(lease.key)}), rotating to another key`,
 						);
 						continue;
 					}
@@ -100,7 +100,7 @@ export function createRotatingStreamSimple(pool: KeyPool, apiName: string, notif
 					}
 					pool.report(lease, "error");
 					lastProblem = error instanceof Error ? error.message : String(error);
-					notify(`keypool[${pool.config.id}]: request error on ${lease.label}, trying another key`);
+					notify(`multikey[${pool.config.id}]: request error on ${lease.label}, trying another key`);
 				} finally {
 					pool.release(lease);
 				}
@@ -108,7 +108,7 @@ export function createRotatingStreamSimple(pool: KeyPool, apiName: string, notif
 
 			// All keys exhausted — surface a rate-limit-flavored error so pi's own
 			// retry/backoff kicks in; by then some cooldowns have expired.
-			emitError(out, model, `keypool[${pool.config.id}]: all ${maxAttempts} keys exhausted (last: ${lastProblem})`);
+			emitError(out, model, `multikey[${pool.config.id}]: all ${maxAttempts} keys exhausted (last: ${lastProblem})`);
 		})();
 
 		return out;

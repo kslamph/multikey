@@ -1,0 +1,8 @@
+{
+  "compacted": true,
+  "fullOutputPath": "/Users/kslam/.pi/agent/sessions/--Users-kslam-baiext-keypool--/.pi-agent-browser-artifacts/01a04923-9a1c-7407-9558-94cdcf91da7a/pi-agent-browser-output-c5df207e08d3b6c0.json",
+  "outputCharCount": 5596,
+  "outputLineCount": 152,
+  "previewCharCount": 2205,
+  "previewLineCount": 40
+}

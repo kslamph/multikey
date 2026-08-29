@@ -1,0 +1,17 @@
+{
+  "lifecycle": {
+    "effectiveLaunch": {
+      "browserLaunched": true,
+      "engine": "chrome",
+      "launchHash": 12798390076057946000
+    },
+    "launched": false,
+    "relaunchedBrowser": false,
+    "restartedBackground": false,
+    "restoreStatus": "loaded",
+    "reused": true,
+    "saveStatus": "saved"
+  },
+  "origin": "https://raw.githubusercontent.com/nicobailon/pi-subagents/main/.github/workflows/release.yml",
+  "text": "name: Release\n\non:\n  workflow_dispatch:\n\npermissions:\n  contents: read\n  id-token: [REDACTED]\n\nconcurrency:\n  group: release-${{ github.ref }}\n  cancel-in-progress: false\n\njobs:\n  publish:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v5\n      - uses: actions/setup-node@v5\n        with:\n          node-version: 24\n          registry-url: https://registry.npmjs.org/\n      - name: Install devDependencies\n        run: npm ci --ignore-scripts\n      - name: Run tests\n        run: npm run test:all\n      - name: Publish to npm\n        run: npm publish --provenance\n"
+}

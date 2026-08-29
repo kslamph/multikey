@@ -1,8 +1,9 @@
 /**
- * keypool config: load / save / normalize / seed
+ * multikey config: load / save / normalize / seed
  *
- * Config lives at ~/.pi/agent/keypool.json. Each "pool" becomes one pi provider
+ * Config lives at ~/.pi/agent/multikey.json. Each "pool" becomes one pi provider
  * whose requests are spread across multiple API keys with automatic 429 rotation.
+ * (Pools created before the rename live in keypool.json and are migrated once.)
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -11,7 +12,7 @@ import { dirname, join } from "node:path";
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import type { AuthStyle } from "./probe.ts";
 
-/** Safe model defaults applied when a spec doesn't say otherwise (edit in keypool.json). */
+/** Safe model defaults applied when a spec doesn't say otherwise (edit in multikey.json). */
 export const DEFAULT_CONTEXT_WINDOW = 128_000;
 export const DEFAULT_MAX_TOKENS = 16_384;
 export const DEFAULT_INPUT: ("text" | "image")[] = ["text"];
@@ -78,7 +79,13 @@ export interface KeypoolConfig {
 }
 
 export function configPath(): string {
-	return process.env.KEYPOOL_CONFIG ?? join(homedir(), ".pi", "agent", "keypool.json");
+	return process.env.MULTIKEY_CONFIG ?? process.env.KEYPOOL_CONFIG ?? join(homedir(), ".pi", "agent", "multikey.json");
+}
+
+/** Pre-rename default location; only consulted for migration when no env override is set. */
+function legacyConfigPath(): string | undefined {
+	if (process.env.MULTIKEY_CONFIG || process.env.KEYPOOL_CONFIG) return undefined;
+	return join(homedir(), ".pi", "agent", "keypool.json");
 }
 
 const DEFAULT_COOLDOWN_MS = 20_000;
@@ -237,9 +244,17 @@ function seedConfig(): KeypoolConfig {
 	return { pools: discoverPools() };
 }
 
-export function loadConfig(): { config: KeypoolConfig; created: boolean } {
+export function loadConfig(): { config: KeypoolConfig; created: boolean; migratedFrom?: string } {
 	const path = configPath();
 	if (!existsSync(path)) {
+		const legacy = legacyConfigPath();
+		if (legacy && existsSync(legacy)) {
+			// One-time rename migration: adopt the old keypool.json as-is.
+			const raw = JSON.parse(readFileSync(legacy, "utf-8")) as KeypoolConfig;
+			const config = normalize(raw);
+			saveConfig(config);
+			return { config, created: false, migratedFrom: legacy };
+		}
 		const config = seedConfig();
 		saveConfig(config);
 		return { config, created: true };

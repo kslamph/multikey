@@ -1,4 +1,4 @@
-# pi-keypool
+# pi-multikey
 
 一个 pi 扩展：把多个 API key 组成一个"密钥池"，对外只暴露**一个 provider**。
 
@@ -12,19 +12,19 @@
 
 ```bash
 # 方式一：git（推荐，无需 npm 账号）
-pi install git:github.com/<user>/pi-keypool@v1.0.0
+pi install git:github.com/kslamph/multikey@v1.2.0
 
-# 方式二：npm
-pi install npm:pi-keypool
+# 方式二：npm（scoped 包，发布时始终带 --access public）
+pi install npm:pi-multikey
 
 # 方式三：本地目录
-pi install /path/to/keypool
+pi install /path/to/multikey
 ```
 
 ## 快速开始（B.AI preset）
 
 ```
-/keypool → Add pool… → Preset: B.AI → 逐行粘贴 key（一行一个，留空结束）
+/multikey → Add pool… → Preset: B.AI → 逐行粘贴 key（一行一个，留空结束）
 ```
 
 选 preset 后 endpoint、compat、6 个模型的全部设定自动就位，模型通过
@@ -53,7 +53,7 @@ DeepSeek / Tencent / 小米官方文档，并对每个 thinking 档位做过实�
 
 ## 配置
 
-`~/.pi/agent/keypool.json`。首次运行时会从 `~/.pi/agent/models.json` 自动发现
+`~/.pi/agent/multikey.json`。首次运行时会从 `~/.pi/agent/models.json` 自动发现
 可合并的池（同一 baseUrl 出现 ≥2 个 provider = 你在按 key 复制 provider），
 也会收录指向 `api.b.ai` 的 provider；什么都没发现则生成空配置。
 
@@ -79,7 +79,7 @@ DeepSeek / Tencent / 小米官方文档，并对每个 thinking 档位做过实�
 }
 ```
 
-以后要加 nvidia / opencode 等：`/keypool` → `Add pool…`（Custom），或直接编辑
+以后要加 nvidia / opencode 等：`/multikey` → `Add pool…`（Custom），或直接编辑
 JSON 后 `Reload config from disk`。
 
 ### 添加自定义池（不再询问 API 类型）
@@ -89,14 +89,14 @@ JSON 后 `Reload config from disk`。
 1. 用 `Authorization: Bearer` 请求 `<baseUrl>/models`（会自动尝试 `<baseUrl>/v1/models`），若返回 401/403 再换 `x-api-key` 重试。
 2. 有些网关的 `/models` 是公开的，因此还会发一个 1 token 的迷你 chat 请求验证 key。若两种头都被拒但假 key 能通过，说明是免鉴权的开放端点，按默认 Bearer 保存。
 3. 直接从服务端返回的模型列表中**多选**要添加的模型。元数据里的上下文长度 / 输入模态 / 最大输出会被采用，其余一律安全默认值（128k 上下文、text 输入、16k 最大输出、成本 0）。
-4. 可选：逐模型微调常用参数（上下文、输入模态、最大输出），或跳过以后在 Models 菜单里改。高级字段（thinking 映射、compat、cost）直接编辑 `keypool.json` 后 `Reload config from disk`。
+4. 可选：逐模型微调常用参数（上下文、输入模态、最大输出），或跳过以后在 Models 菜单里改。高级字段（thinking 映射、compat、cost）直接编辑 `multikey.json` 后 `Reload config from disk`。
 
 探测出的认证头风格只在端点确实要求 `x-api-key` 时才会存为 `"auth": "api-key"`，默认 Bearer。整池**最后一次性写入**，中途取消不会留下半成品 provider。
 
 ## 管理界面
 
 ```
-/keypool
+/multikey
 ├─ Status                    实时状态：每把 key 的 in-flight / 冷却 / 429 计数
 ├─ Manage pools…             api 类型非法的池会标 ⚠ broken；未完成的池标 (incomplete)
 │  ├─ Keys…                  一行一个添加 key；删 / 改 / 禁用
@@ -139,8 +139,8 @@ JSON 后 `Reload config from disk`。
 
 ## 安全提示
 
-key 明文保存在 `~/.pi/agent/keypool.json`，建议：
+key 明文保存在 `~/.pi/agent/multikey.json`，建议：
 
 ```bash
-chmod 600 ~/.pi/agent/keypool.json
+chmod 600 ~/.pi/agent/multikey.json
 ```

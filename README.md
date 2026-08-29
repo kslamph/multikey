@@ -1,4 +1,4 @@
-# pi-keypool
+# pi-multikey
 
 [中文](./README.zh.md)
 
@@ -14,19 +14,19 @@ It solves three pain points:
 
 ```bash
 # Option 1: git (recommended, no npm account needed)
-pi install git:github.com/<user>/pi-keypool@v1.0.0
+pi install git:github.com/kslamph/multikey@v1.2.0
 
 # Option 2: npm
-pi install npm:pi-keypool
+pi install npm:pi-multikey
 
 # Option 3: local directory
-pi install /path/to/keypool
+pi install /path/to/multikey
 ```
 
 ## Quick start (B.AI preset)
 
 ```
-/keypool → Add pool… → Preset: B.AI → paste keys one per line (blank line to finish)
+/multikey → Add pool… → Preset: B.AI → paste keys one per line (blank line to finish)
 ```
 
 After picking the preset, the endpoint, compat, and all 6 model definitions are wired up automatically. Models are available directly as `bai/<model-id>`, e.g. `bai/deepseek-v4-flash`.
@@ -50,7 +50,7 @@ To add a preset: append one entry to the `PRESETS` array in `presets.ts`.
 
 ## Configuration
 
-`~/.pi/agent/keypool.json`. On first run it auto-discovers mergeable pools from `~/.pi/agent/models.json` (≥2 providers sharing a baseUrl = you copying the provider per key), and also picks up providers pointing at `api.b.ai`; if nothing is found it generates an empty config.
+`~/.pi/agent/multikey.json`. On first run it auto-discovers mergeable pools from `~/.pi/agent/models.json` (≥2 providers sharing a baseUrl = you copying the provider per key), and also picks up providers pointing at `api.b.ai`; if nothing is found it generates an empty config.
 
 ```jsonc
 {
@@ -74,7 +74,7 @@ To add a preset: append one entry to the `PRESETS` array in `presets.ts`.
 }
 ```
 
-To add nvidia / opencode etc. later: `/keypool` → `Add pool…` (Custom), or edit the JSON directly and `Reload config from disk`.
+To add nvidia / opencode etc. later: `/multikey` → `Add pool…` (Custom), or edit the JSON directly and `Reload config from disk`.
 
 ### Adding a custom pool (no questions about API types)
 
@@ -83,14 +83,14 @@ The custom wizard only asks for the essentials — **provider id, base URL, key(
 1. It fetches `<baseUrl>/models` (and `<baseUrl>/v1/models` as a fallback) with `Authorization: Bearer`; on 401/403 it retries with `x-api-key`.
 2. `/models` is public on some gateways, so it also sends a tiny 1-token chat request to verify the key. If both header styles are rejected there but a dummy key passes, the endpoint simply doesn't check keys (open endpoint) and the pool is saved with the default Bearer auth.
 3. You multi-select the models to add straight from the server's list. Context window / input modes / max output found in the model metadata are adopted; everything else gets safe defaults (128k context, text input, 16k max output, zero cost).
-4. Optionally tune the common params (context size, input modes, max output) per model — or skip and edit them later via the Models menu. Anything advanced (thinking maps, compat, cost) you edit in `keypool.json` and hit *Reload config from disk*.
+4. Optionally tune the common params (context size, input modes, max output) per model — or skip and edit them later via the Models menu. Anything advanced (thinking maps, compat, cost) you edit in `multikey.json` and hit *Reload config from disk*.
 
 The detected header style is stored as `"auth": "api-key"` only when the endpoint proved to want `x-api-key`; the default is Bearer. The pool is saved **only after** this completes, so a cancelled wizard never leaves a half-configured provider behind.
 
 ## Management UI
 
 ```
-/keypool
+/multikey
 ├─ Status                     live status: in-flight / cooldown / 429 count per key
 ├─ Manage pools…              pools with an unknown api type are marked ⚠ broken; incomplete pools (incomplete)
 │  ├─ Keys…                   add keys one per line; delete / edit / disable
@@ -156,8 +156,8 @@ Setup (once):
 
 ## Security note
 
-Keys are stored in plaintext at `~/.pi/agent/keypool.json`; recommended:
+Keys are stored in plaintext at `~/.pi/agent/multikey.json`; recommended:
 
 ```bash
-chmod 600 ~/.pi/agent/keypool.json
+chmod 600 ~/.pi/agent/multikey.json
 ```

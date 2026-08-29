@@ -238,7 +238,7 @@ export async function probeEndpoint(
 			// Models listed fine but chat auth unverifiable: maybe the endpoint is open.
 			try {
 				emit(`auth check: same chat with a dummy key to detect open endpoints…`);
-				const bogus = await chatProbe(baseUrl, "bearer", "keypool-open-endpoint-check", chatModelId);
+				const bogus = await chatProbe(baseUrl, "bearer", "multikey-open-endpoint-check", chatModelId);
 				if (bogus === "ok") {
 					emit(`   accepted — endpoint does not verify keys (open endpoint)`);
 				} else {

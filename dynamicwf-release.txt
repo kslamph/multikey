@@ -1,0 +1,17 @@
+{
+  "lifecycle": {
+    "effectiveLaunch": {
+      "browserLaunched": true,
+      "engine": "chrome",
+      "launchHash": 12798390076057946000
+    },
+    "launched": false,
+    "relaunchedBrowser": false,
+    "restartedBackground": false,
+    "restoreStatus": "loaded",
+    "reused": true,
+    "saveStatus": "saved"
+  },
+  "origin": "https://raw.githubusercontent.com/QuintinShaw/pi-dynamic-workflows/main/.github/workflows/release.yml",
+  "text": "name: Release\n\n# Publishing is driven by version tags. To cut a release:\n#   1. Bump \"version\" in package.json (e.g. 1.1.0) and commit on main.\n#   2. git tag v1.1.0 && git push origin v1.1.0\n# The tag must match the package.json version, or the publish job fails fast.\n\non:\n  push:\n    tags:\n      - \"v*\"\n\npermissions:\n  contents: write   # create the GitHub Release\n  id-token: [REDACTED]   # npm provenance (OIDC)\n\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v6\n      - uses: actions/setup-node@v6\n        with:\n          node-version: 22\n          cache: npm\n      - run: npm ci\n      - name: Lint, build, and test\n        run: npm test\n\n  publish-npm:\n    needs: test\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v6\n      - uses: actions/setup-node@v6\n        with:\n          node-version: 22\n          cache: npm\n          registry-url: https://registry.npmjs.org/\n      - run: npm ci\n\n      - name: Verify tag matches package.json version\n        run: |\n          PKG_VERSION=\"$(node -p \"require('./package.json').version\")\"\n          TAG_VERSION=\"${GITHUB_REF_NAME#v}\"\n          if [ \"$PKG_VERSION\" != \"$TAG_VERSION\" ]; then\n            echo \"::error::Tag $GITHUB_REF_NAME (=$TAG_VERSION) does not match package.json version $PKG_VERSION\"\n            exit 1\n          fi\n\n      - name: Build\n        run: npm run build\n\n      - name: Publish to npm\n        run: npm publish --provenance --access public\n        env:\n          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n\n  github-release:\n    needs: publish-npm\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v6\n      - name: Create GitHub Release\n        uses: softprops/action-gh-release@v2\n        with:\n          generate_release_notes: true\n"
+}

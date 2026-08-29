@@ -1,31 +1,35 @@
 /**
- * keypool — one pi provider, many API keys.
+ * multikey — one pi provider, many API keys.
  *
- * Every pool in ~/.pi/agent/keypool.json is registered as a pi provider.
+ * Every pool in ~/.pi/agent/multikey.json is registered as a pi provider.
  * Requests are spread across the pool's keys (least-loaded, least-recently-used),
  * and any 429/401/403 rotates to the next key with a cooldown — including across
  * concurrent subagents, since each in-flight request holds its own key lease.
  *
- * Manage everything with the /keypool command (better-custom style TUI).
+ * Manage everything with the /multikey command (better-custom style TUI).
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getApiProvider, type Api } from "@earendil-works/pi-ai";
-import { loadConfig, saveConfig, toProviderModels, type KeypoolConfig, type PoolConfig } from "./config.ts";
+import { configPath, loadConfig, saveConfig, toProviderModels, type KeypoolConfig, type PoolConfig } from "./config.ts";
 import { KeyPool } from "./pool.ts";
 import { createRotatingStreamSimple } from "./stream.ts";
 import { runManager, type ManagerHooks } from "./manage.ts";
 
-export default function keypool(pi: ExtensionAPI) {
+type CommandContext = Parameters<Parameters<ExtensionAPI["registerCommand"]>[1]["handler"]>[1];
+
+export default function multikey(pi: ExtensionAPI) {
 	let config: KeypoolConfig;
 	let created = false;
+	let migratedFrom: string | undefined;
 	try {
 		const loaded = loadConfig();
 		config = loaded.config;
 		created = loaded.created;
+		migratedFrom = loaded.migratedFrom;
 	} catch (error) {
 		// Never break pi startup over config problems.
-		console.error(`[keypool] failed to load config: ${error instanceof Error ? error.message : String(error)}`);
+		console.error(`[multikey] failed to load config: ${error instanceof Error ? error.message : String(error)}`);
 		config = { pools: [] };
 	}
 
@@ -52,7 +56,7 @@ export default function keypool(pi: ExtensionAPI) {
 		const api = pool.api ?? "openai-completions";
 		if (!getApiProvider(api as Api)) {
 			// Never throw at startup over a bad api value; report it instead so
-			// the user gets a fix hint (and /keypool marks the pool broken).
+			// the user gets a fix hint (and /multikey marks the pool broken).
 			return `unknown api type "${api}" (edit the pool and pick a valid API type)`;
 		}
 		const keyPool = pools.get(pool.id) ?? new KeyPool(pool);
@@ -63,7 +67,7 @@ export default function keypool(pi: ExtensionAPI) {
 			name: pool.name ?? pool.id,
 			baseUrl: pool.baseUrl,
 			// Real keys are injected per-request by the rotating stream function.
-			apiKey: "keypool-managed",
+			apiKey: "multikey-managed",
 			api,
 			headers: pool.headers,
 			models: toProviderModels(pool),
@@ -86,7 +90,7 @@ export default function keypool(pi: ExtensionAPI) {
 			return;
 		}
 		const error = registerPool(pool);
-		if (error) notify(`keypool[${poolId}]: provider not registered: ${error}`);
+		if (error) notify(`multikey[${poolId}]: provider not registered: ${error}`);
 	}
 
 	function removePool(poolId: string) {
@@ -107,7 +111,7 @@ export default function keypool(pi: ExtensionAPI) {
 		for (const pool of config.pools) {
 			seen.add(pool.id);
 			const error = registerPool(pool);
-			if (error) notify(`keypool[${pool.id}]: provider not registered: ${error}`);
+			if (error) notify(`multikey[${pool.id}]: provider not registered: ${error}`);
 		}
 		for (const id of [...pools.keys()]) {
 			if (!seen.has(id)) removePool(id);
@@ -130,38 +134,48 @@ export default function keypool(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		ui = ctx.ui;
 		for (const { id, reason } of skipped) {
-			notify(`keypool: provider "${id}" not available — ${reason}. Fix it via /keypool → Manage pools.`);
+			notify(`multikey: provider "${id}" not available — ${reason}. Fix it via /multikey → Manage pools.`);
 		}
 		skipped.length = 0;
+		if (migratedFrom) {
+			notify(`multikey: migrated config from ${migratedFrom} to ${configPath()} (old file kept as backup).`);
+		}
 		if (created) {
-			const path = process.env.KEYPOOL_CONFIG ?? "~/.pi/agent/keypool.json";
+			const path = configPath();
 			if (config.pools.length > 0) {
 				const summary = config.pools.map((p) => `"${p.id}" (${p.keys.length} keys, ${p.models.length} models)`).join(", ");
-				notify(`keypool: created ${path} from your models.json — pool ${summary}. Manage with /keypool.`);
+				notify(`multikey: created ${path} from your models.json — pool ${summary}. Manage with /multikey.`);
 			} else {
-				notify(`keypool: no multi-key providers found in models.json — run /keypool → Add pool to create one at ${path}.`);
+				notify(`multikey: no multi-key providers found in models.json — run /multikey → Add pool to create one at ${path}.`);
 			}
 		}
 	});
 
+	const managerHandler = async (_args: unknown, ctx: CommandContext) => {
+		if (!ctx.hasUI) {
+			ctx.ui.notify("multikey: interactive management requires a TUI session", "error");
+			return;
+		}
+		const hooks: ManagerHooks = {
+			get config() {
+				return config;
+			},
+			pools,
+			saveAndReregister,
+			removePool,
+			reloadFromDisk,
+			notify,
+		};
+		await runManager(pi, ctx, hooks);
+	};
+
+	pi.registerCommand("multikey", {
+		description: "Many API keys per provider: 429 rotation, cooldowns, live status",
+		handler: managerHandler,
+	});
+	// Legacy alias from the pre-rename days — same manager.
 	pi.registerCommand("keypool", {
-		description: "Manage key pools: keys, models, endpoints, cooldowns, live status",
-		handler: async (_args, ctx) => {
-			if (!ctx.hasUI) {
-				ctx.ui.notify("keypool: interactive management requires a TUI session", "error");
-				return;
-			}
-			const hooks: ManagerHooks = {
-				get config() {
-					return config;
-				},
-				pools,
-				saveAndReregister,
-				removePool,
-				reloadFromDisk,
-				notify,
-			};
-			await runManager(pi, ctx, hooks);
-		},
+		description: "Alias of /multikey",
+		handler: managerHandler,
 	});
 }

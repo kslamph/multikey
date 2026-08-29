@@ -1,10 +1,11 @@
 /**
- * /keypool management menus: pools, keys, models, settings — better-custom style.
+ * /multikey management menus: pools, keys, models, settings — better-custom style.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getApiProvider, type Api } from "@earendil-works/pi-ai";
 import {
+	configPath,
 	DEFAULT_CONTEXT_WINDOW,
 	DEFAULT_INPUT,
 	DEFAULT_MAX_TOKENS,
@@ -83,11 +84,11 @@ function describeAuth(probe: ProbeResult): string {
 export async function runManager(pi: ExtensionAPI, ctx: CommandContext, hooks: ManagerHooks): Promise<void> {
 	for (;;) {
 		const pools = hooks.config.pools;
-		const action = await selectOne(ctx, "Key Pool Manager", [
+		const action = await selectOne(ctx, "Multikey", [
 			{ value: "status", label: "Status", description: "Live per-key state: in-flight, cooldowns, 429 counts" },
 			{ value: "manage", label: "Manage pools…", description: "Keys, models, endpoints, cooldowns" },
 			{ value: "add", label: "Add pool…", description: "Register another provider (b.ai, nvidia, opencode, …)" },
-			{ value: "reload", label: "Reload config from disk", description: "Re-read keypool.json and re-register providers" },
+			{ value: "reload", label: "Reload config from disk", description: "Re-read multikey.json and re-register providers" },
 			{ value: "usage", label: "Usage tips" },
 			{ value: "exit", label: "Close" },
 		]);
@@ -98,7 +99,7 @@ export async function runManager(pi: ExtensionAPI, ctx: CommandContext, hooks: M
 			continue;
 		}
 		if (action === "status") {
-			await showInfo(ctx, "Key Pool Status", renderStatus(hooks));
+			await showInfo(ctx, "Multikey Status", renderStatus(hooks));
 			continue;
 		}
 		if (action === "usage") {
@@ -108,7 +109,7 @@ export async function runManager(pi: ExtensionAPI, ctx: CommandContext, hooks: M
 				"• 429: the key gets a cooldown (default 20s, retry-after honored) and the request instantly",
 				"  retries on the next key — no error reaches the agent unless every key is exhausted.",
 				"• Point subagents at e.g. <pool-id>/<model-id> in settings.json agentOverrides (pool id = provider name).",
-				`• Config file: ${process.env.KEYPOOL_CONFIG ?? "~/.pi/agent/keypool.json"}`,
+				`• Config file: ${configPath()}`,
 			]);
 			continue;
 		}
@@ -137,9 +138,9 @@ export async function runManager(pi: ExtensionAPI, ctx: CommandContext, hooks: M
 function reloadFromDiskSafe(hooks: ManagerHooks): void {
 	try {
 		hooks.reloadFromDisk();
-		hooks.notify("keypool: reloaded config from disk");
+		hooks.notify("multikey: reloaded config from disk");
 	} catch (error) {
-		hooks.notify(`keypool: reload failed: ${error instanceof Error ? error.message : String(error)}`);
+		hooks.notify(`multikey: reload failed: ${error instanceof Error ? error.message : String(error)}`);
 	}
 }
 
@@ -206,7 +207,7 @@ async function poolMenu(ctx: CommandContext, hooks: ManagerHooks, poolId: string
 			if (api && api !== "__other") {
 				pool.api = api;
 				hooks.saveAndReregister(pool.id);
-				hooks.notify(`keypool[${pool.id}]: api set to ${api}`);
+				hooks.notify(`multikey[${pool.id}]: api set to ${api}`);
 			}
 			continue;
 		}
@@ -217,7 +218,7 @@ async function poolMenu(ctx: CommandContext, hooks: ManagerHooks, poolId: string
 			const ok = await ctx.ui.confirm("Delete pool", `Remove provider "${pool.id}" and its ${pool.keys.length} key(s)?`);
 			if (ok) {
 				hooks.removePool(pool.id);
-				hooks.notify(`keypool: removed provider "${pool.id}"`);
+				hooks.notify(`multikey: removed provider "${pool.id}"`);
 				return;
 			}
 		}
@@ -255,11 +256,11 @@ async function keysMenu(ctx: CommandContext, hooks: ManagerHooks, pool: PoolConf
 			const value = raw?.trim();
 			if (value) {
 				if (pool.keys.some((k) => k.key === value)) {
-					hooks.notify(`keypool[${pool.id}]: key already in pool`);
+					hooks.notify(`multikey[${pool.id}]: key already in pool`);
 				} else {
 					pool.keys.push({ key: value, label: `key-${pool.keys.length + 1}`, enabled: true });
 					hooks.saveAndReregister(pool.id);
-					hooks.notify(`keypool[${pool.id}]: added key ${value.length > 10 ? value.slice(0, 6) + "…" + value.slice(-4) : value}`);
+					hooks.notify(`multikey[${pool.id}]: added key ${value.length > 10 ? value.slice(0, 6) + "…" + value.slice(-4) : value}`);
 				}
 			}
 			continue;
@@ -293,7 +294,7 @@ async function keysMenu(ctx: CommandContext, hooks: ManagerHooks, pool: PoolConf
 		} else if (keyAction === "remove") {
 			pool.keys.splice(index, 1);
 			hooks.saveAndReregister(pool.id);
-			hooks.notify(`keypool[${pool.id}]: removed key`);
+			hooks.notify(`multikey[${pool.id}]: removed key`);
 		}
 	}
 }
@@ -326,7 +327,7 @@ async function modelsMenu(ctx: CommandContext, hooks: ManagerHooks, pool: PoolCo
 				if (added && added.length > 0) {
 					pool.models.push(...added);
 					hooks.saveAndReregister(pool.id);
-					hooks.notify(`keypool[${pool.id}]: added ${added.length} model(s): ${added.map((m) => m.id).join(", ")}`);
+					hooks.notify(`multikey[${pool.id}]: added ${added.length} model(s): ${added.map((m) => m.id).join(", ")}`);
 				}
 				continue;
 			}
@@ -334,7 +335,7 @@ async function modelsMenu(ctx: CommandContext, hooks: ManagerHooks, pool: PoolCo
 			const id = await ctx.ui.input("Model id", "e.g. deepseek-v4-flash");
 			if (id === undefined || !id.trim()) continue;
 			if (pool.models.some((m) => m.id === id.trim())) {
-				hooks.notify(`keypool[${pool.id}]: model "${id}" already exists`);
+				hooks.notify(`multikey[${pool.id}]: model "${id}" already exists`);
 				continue;
 			}
 			const model = { ...DEFAULT_MODEL_TEMPLATE, id: id.trim(), name: id.trim() };
@@ -342,7 +343,7 @@ async function modelsMenu(ctx: CommandContext, hooks: ManagerHooks, pool: PoolCo
 			if (edited) {
 				pool.models.push(edited);
 				hooks.saveAndReregister(pool.id);
-				hooks.notify(`keypool[${pool.id}]: added model ${edited.id}`);
+				hooks.notify(`multikey[${pool.id}]: added model ${edited.id}`);
 			}
 			continue;
 		}
@@ -420,7 +421,7 @@ async function modelMenu(ctx: CommandContext, hooks: ManagerHooks, pool: PoolCon
 			const index = pool.models.indexOf(model);
 			if (index >= 0) pool.models.splice(index, 1);
 			hooks.saveAndReregister(pool.id);
-			hooks.notify(`keypool[${pool.id}]: removed model`);
+			hooks.notify(`multikey[${pool.id}]: removed model`);
 			return;
 		}
 	}
@@ -605,7 +606,7 @@ async function askKeys(ctx: CommandContext, hooks: ManagerHooks, hint?: string):
 			break;
 		}
 		if (keys.includes(value)) {
-			hooks.notify("keypool: duplicate key ignored");
+			hooks.notify("multikey: duplicate key ignored");
 			continue;
 		}
 		keys.push(value);
@@ -652,7 +653,7 @@ async function addPresetPool(ctx: CommandContext, hooks: ManagerHooks, preset: P
 	hooks.config.pools.push(pool);
 	hooks.saveAndReregister(poolId);
 	hooks.notify(
-		`keypool: created "${poolId}" from ${preset.name} preset — ${pool.keys.length} key(s), ${pool.models.length} models ready`,
+		`multikey: created "${poolId}" from ${preset.name} preset — ${pool.keys.length} key(s), ${pool.models.length} models ready`,
 	);
 	await showInfo(ctx, `Preset applied: ${preset.name}`, [
 		`Provider:  ${poolId}/<model-id>  (e.g. ${poolId}/${pool.models[0]?.id ?? "..."})`,
@@ -660,7 +661,7 @@ async function addPresetPool(ctx: CommandContext, hooks: ManagerHooks, preset: P
 		`Keys:      ${pool.keys.length} loaded — ${authNote}`,
 		`Models:    ${pool.models.map((m) => m.id).join(", ")}`,
 		"",
-		"Add more keys anytime: /keypool → Manage pools → Keys.",
+		"Add more keys anytime: /multikey → Manage pools → Keys.",
 		"Model specs (thinking tiers, context, modalities) are preconfigured.",
 	]);
 }
@@ -694,14 +695,14 @@ async function addCustomPool(ctx: CommandContext, hooks: ManagerHooks): Promise<
 
 	// 6. Safe defaults immediately; common params (context, input modes,
 	//    max tokens) optionally tuned here; everything else stays editable in
-	//    keypool.json.
+	//    multikey.json.
 	let tuned = false;
 	if (models.length > 0) {
 		const params = await selectOne(ctx, "Model parameters", [
 			{
 				value: "defaults",
 				label: "Use safe defaults (recommended)",
-				description: `${DEFAULT_CONTEXT_WINDOW / 1000}k context · text input · ${DEFAULT_MAX_TOKENS / 1000}k max output — edit later via Models menu or keypool.json`,
+				description: `${DEFAULT_CONTEXT_WINDOW / 1000}k context · text input · ${DEFAULT_MAX_TOKENS / 1000}k max output — edit later via Models menu or multikey.json`,
 			},
 			{ value: "tune", label: "Tune common params now…", description: "Context size, input modes, max output — per model" },
 		]);
@@ -735,8 +736,8 @@ async function addCustomPool(ctx: CommandContext, hooks: ManagerHooks): Promise<
 		`Models:    ${modelSummary}${tuned ? " (tuned)" : models.length > 0 ? " (safe defaults)" : ""}`,
 		"",
 		"Use it as: /model  →  " + poolId + "/<model-id>",
-		`Advanced params (thinking maps, compat, cost): edit ${process.env.KEYPOOL_CONFIG ?? "~/.pi/agent/keypool.json"},`,
-		"then /keypool → Reload config from disk.",
+		`Advanced params (thinking maps, compat, cost): edit ${configPath()},`,
+		"then /multikey → Reload config from disk.",
 	]);
 }
 
@@ -772,7 +773,7 @@ async function pickModelsForNewPool(
 		choice = await selectOne(ctx, "Could not list models from the endpoint", [
 			{ value: "manual", label: "Enter model ids manually…", description: "Type ids, edit specs as JSON" },
 			{ value: "retry", label: "Retry probe" },
-			{ value: "empty", label: `Create "${poolId}" without models`, description: "Add models later via /keypool → Models" },
+			{ value: "empty", label: `Create "${poolId}" without models`, description: "Add models later via /multikey → Models" },
 			{ value: "cancel", label: "Cancel (nothing saved)" },
 		]);
 		if (choice === null || choice === "cancel") return undefined;
@@ -839,7 +840,7 @@ async function tuneCommonParams(ctx: CommandContext, models: PoolModelConfig[]):
 async function fetchAndPickModels(ctx: CommandContext, hooks: ManagerHooks, pool: PoolConfig): Promise<PoolModelConfig[] | undefined> {
 	const key = firstEnabledKey(pool);
 	if (!key) {
-		hooks.notify(`keypool[${pool.id}]: add a key first — the probe needs one`);
+		hooks.notify(`multikey[${pool.id}]: add a key first — the probe needs one`);
 		return undefined;
 	}
 	const probe = await withProgress(ctx, `Fetching models from ${pool.baseUrl}…`, (update) =>
@@ -856,7 +857,7 @@ async function fetchAndPickModels(ctx: CommandContext, hooks: ManagerHooks, pool
 	const existing = new Set(pool.models.map((m) => m.id));
 	const fresh = probe.models.filter((m) => !existing.has(m.id));
 	if (fresh.length === 0) {
-		hooks.notify(`keypool[${pool.id}]: all ${probe.models.length} listed models are already added`);
+		hooks.notify(`multikey[${pool.id}]: all ${probe.models.length} listed models are already added`);
 		return undefined;
 	}
 	const selectedIds = await pickMany(
