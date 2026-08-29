@@ -43,6 +43,14 @@ const BAI_COMPAT = {
 	supportsReasoningEffort: true,
 };
 
+// Shared compat for OpenCode Zen's openai-completions free models, mirroring pi's
+// built-in opencode catalog (dist/bundle/chunks/chunk-OMWWHBTG.js).
+const ZEN_CHAT_COMPAT = {
+	supportsStore: false,
+	supportsDeveloperRole: false,
+	maxTokensField: "max_tokens",
+};
+
 export const PRESETS: Preset[] = [
 	{
 		id: "b-ai",
@@ -117,6 +125,94 @@ export const PRESETS: Preset[] = [
 				contextWindow: 1_000_000,
 				maxTokens: 131_072,
 				thinkingLevelMap: levels({ low: "low", high: "high", max: "max" }),
+			},
+		],
+	},
+	{
+		id: "opencode-zen",
+		name: "OpenCode Zen",
+		description: "opencode.ai/zen free tier — Big Pickle, MiMo V2.5, Hy3, Ling 3.0 Fin, Nemotron 3 Ultra/Lightning, Muse Spark 1.2 (7 free models)",
+		defaultPoolId: "zen",
+		baseUrl: "https://opencode.ai/zen/v1",
+		api: "openai-completions",
+		keyHint: "https://opencode.ai/auth → sign in → workspace Keys page (one entry per key; multiple keys share the load)",
+		models: [
+			{
+				// models.dev `opencode` provider + pi built-in catalog. Stealth model;
+				// always-on reasoning with no effort control (no thinkingLevelMap, like pi's catalog).
+				id: "big-pickle",
+				name: "Big Pickle",
+				reasoning: true,
+				input: ["text"],
+				contextWindow: 200_000,
+				maxTokens: 32_000,
+				compat: ZEN_CHAT_COMPAT,
+			},
+			{
+				// Xiaomi MiMo V2.5 omni; raw model is 1M ctx but the Zen FREE tier serves 200K/32K.
+				id: "mimo-v2.5-free",
+				name: "MiMo V2.5 Free",
+				reasoning: true,
+				input: ["text", "image"],
+				contextWindow: 200_000,
+				maxTokens: 32_000,
+				compat: ZEN_CHAT_COMPAT,
+			},
+			{
+				// Tencent Hy3; raw model is 262K ctx but the Zen FREE tier serves 190K/64K.
+				// thinkingFormat defaults to reasoning_effort: levels map straight to Hy3's
+				// low/medium/high effort tiers; no off toggle on the free endpoint.
+				id: "hy3-free",
+				name: "Hy3 Free",
+				reasoning: true,
+				input: ["text"],
+				contextWindow: 190_000,
+				maxTokens: 64_000,
+				thinkingLevelMap: levels({ low: "low", medium: "medium", high: "high" }),
+				compat: ZEN_CHAT_COMPAT,
+			},
+			{
+				// Finance-tuned Ling 3.0 Flash; reasoning toggle only (no effort tiers).
+				id: "ling-3.0-flash-fin-free",
+				name: "Ling 3.0 Flash Fin Free",
+				reasoning: true,
+				input: ["text"],
+				contextWindow: 262_144,
+				maxTokens: 32_768,
+				compat: ZEN_CHAT_COMPAT,
+			},
+			{
+				// NVIDIA Nemotron 3 Ultra; largest open-weight reasoning model on the free tier.
+				id: "nemotron-3-ultra-free",
+				name: "Nemotron 3 Ultra Free",
+				reasoning: true,
+				input: ["text"],
+				contextWindow: 1_000_000,
+				maxTokens: 128_000,
+				compat: ZEN_CHAT_COMPAT,
+			},
+			{
+				// NVIDIA Nemotron 3.5 Lightning (MoE); fast agentic model, 262K output cap.
+				id: "nemotron-3.5-lightning-free",
+				name: "Nemotron 3.5 Lightning Free",
+				reasoning: true,
+				input: ["text"],
+				contextWindow: 262_144,
+				maxTokens: 262_144,
+				compat: ZEN_CHAT_COMPAT,
+			},
+			{
+				// Meta Muse Spark 1.2 Contributor Free — OpenAI Responses API endpoint (not chat
+				// completions), effort tiers minimal..xhigh, no off. compat mirrors pi's catalog.
+				id: "muse-spark-1.2-contributor-free",
+				name: "Muse Spark 1.2 Contributor Free",
+				api: "openai-responses",
+				reasoning: true,
+				input: ["text", "image"],
+				contextWindow: 1_048_576,
+				maxTokens: 131_072,
+				thinkingLevelMap: levels({ minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh" }),
+				compat: { sessionAffinityFormat: "openai-nosession" },
 			},
 		],
 	},

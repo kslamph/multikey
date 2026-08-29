@@ -46,6 +46,22 @@ Built-in presets decouple "model settings" from "keys". The data comes from b.ai
 
 > Why `null` must be explicit: pi's `getSupportedThinkingLevels` treats `mapped === null` as unsupported and hides that level, but **omitting** it is treated as supported and the level name is sent to the API verbatim; `xhigh` / `max` additionally require an explicit non-null value to be usable.
 
+### OpenCode Zen (free tier)
+
+Endpoint `https://opencode.ai/zen/v1`; keys from [opencode.ai/auth](https://opencode.ai/auth) → workspace Keys. Context / max-output are the **Zen free-tier serving limits** (consistent across models.dev `opencode` provider + pi's built-in opencode catalog); the raw models are bigger — MiMo V2.5 = 1M ctx, Hy3 = 262K ctx. `muse-spark-1.2-contributor-free` uses the OpenAI **Responses** API endpoint; the other six use chat completions.
+
+| Model | ctx / max-out | Modalities | Supported thinking levels |
+|---|---|---|---|
+| big-pickle | 200K / 32K | text | always-on (no thinkingLevelMap, like pi's catalog) |
+| mimo-v2.5-free | 200K / 32K | text+image | always-on (no thinkingLevelMap) |
+| hy3-free | 190K / 64K | text | low · medium · high (no off) |
+| ling-3.0-flash-fin-free | 256K / 32K | text | always-on (no thinkingLevelMap) |
+| nemotron-3-ultra-free | 1M / 128K | text | always-on (no thinkingLevelMap) |
+| nemotron-3.5-lightning-free | 256K / 256K | text | always-on (no thinkingLevelMap) |
+| muse-spark-1.2-contributor-free | 1M / 128K | text+image | minimal · low · medium · high · xhigh (no off, Responses API) |
+
+> All seven models are free (zero per-token cost) for a limited time while OpenCode collects feedback; data may be used to improve the models (Nemotron free endpoints are NVIDIA trials — don't send confidential data).
+
 To add a preset: append one entry to the `PRESETS` array in `presets.ts`.
 
 ## Configuration
@@ -74,7 +90,7 @@ To add a preset: append one entry to the `PRESETS` array in `presets.ts`.
 }
 ```
 
-To add nvidia / opencode etc. later: `/multikey` → `Add pool…` (Custom), or edit the JSON directly and `Reload config from disk`.
+To add nvidia / other providers later: `/multikey` → `Add pool…` (Custom), or edit the JSON directly and `Reload config from disk`.
 
 ### Adding a custom pool (no questions about API types)
 
@@ -100,6 +116,7 @@ The detected header style is stored as `"auth": "api-key"` only when the endpoin
 │  └─ Delete pool
 ├─ Add pool…
 │  ├─ Preset: B.AI           all model settings preloaded; paste keys (verified by a probe) and you're done
+│  ├─ Preset: OpenCode Zen   free-tier models preloaded (7 models); paste keys and you're done
 │  └─ Custom…                id + base URL + keys, then auto-probe, model multi-select, safe defaults
 └─ Reload config from disk
 ```
