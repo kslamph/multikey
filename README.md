@@ -60,6 +60,7 @@ To add a preset: append one entry to the `PRESETS` array in `presets.ts`.
       "name": "B.AI (Key Pool)",
       "baseUrl": "https://api.b.ai/v1",
       "api": "openai-completions",
+      "auth": "bearer",                     // optional: "bearer" (default) or "api-key" (x-api-key header)
       "compat": { ... },                    // provider-level defaults, merged into every model
       "cooldownMs": 20000,                  // 429 cooldown
       "invalidKeyCooldownMs": 600000,       // 401/403 cooldown
@@ -75,20 +76,31 @@ To add a preset: append one entry to the `PRESETS` array in `presets.ts`.
 
 To add nvidia / opencode etc. later: `/keypool` → `Add pool…` (Custom), or edit the JSON directly and `Reload config from disk`.
 
+### Adding a custom pool (no questions about API types)
+
+The custom wizard only asks for the essentials — **provider id, base URL, key(s)**. It then probes the endpoint:
+
+1. It fetches `<baseUrl>/models` (and `<baseUrl>/v1/models` as a fallback) with `Authorization: Bearer`; on 401/403 it retries with `x-api-key`.
+2. `/models` is public on some gateways, so it also sends a tiny 1-token chat request to verify the key. If both header styles are rejected there but a dummy key passes, the endpoint simply doesn't check keys (open endpoint) and the pool is saved with the default Bearer auth.
+3. You multi-select the models to add straight from the server's list. Context window / input modes / max output found in the model metadata are adopted; everything else gets safe defaults (128k context, text input, 16k max output, zero cost).
+4. Optionally tune the common params (context size, input modes, max output) per model — or skip and edit them later via the Models menu. Anything advanced (thinking maps, compat, cost) you edit in `keypool.json` and hit *Reload config from disk*.
+
+The detected header style is stored as `"auth": "api-key"` only when the endpoint proved to want `x-api-key`; the default is Bearer. The pool is saved **only after** this completes, so a cancelled wizard never leaves a half-configured provider behind.
+
 ## Management UI
 
 ```
 /keypool
 ├─ Status                     live status: in-flight / cooldown / 429 count per key
-├─ Manage pools…
+├─ Manage pools…              pools with an unknown api type are marked ⚠ broken; incomplete pools (incomplete)
 │  ├─ Keys…                   add keys one per line; delete / edit / disable
-│  ├─ Models…                 add/remove models, edit contextWindow, maxTokens,
-│  │                         modalities, reasoning, thinkingLevelMap, compat, cost
-│  ├─ Endpoint & settings…   baseUrl, api type, cooldown durations, headers
+│  ├─ Models…                 fetch from /models (multi-select) or add manually; edit contextWindow,
+│  │                         maxTokens, modalities, reasoning, thinkingLevelMap, compat, cost
+│  ├─ Endpoint & settings…   baseUrl, api type, auth style, cooldown durations, headers
 │  └─ Delete pool
 ├─ Add pool…
-│  ├─ Preset: B.AI           all model settings preloaded; paste keys and you're done
-│  └─ Custom…                fill in your own endpoint, api type, models
+│  ├─ Preset: B.AI           all model settings preloaded; paste keys (verified by a probe) and you're done
+│  └─ Custom…                id + base URL + keys, then auto-probe, model multi-select, safe defaults
 └─ Reload config from disk
 ```
 

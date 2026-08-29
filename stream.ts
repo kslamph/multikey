@@ -33,6 +33,9 @@ export type Notifier = (message: string) => void;
 export function createRotatingStreamSimple(pool: KeyPool, apiName: string, notify: Notifier) {
 	const impl = getApiProvider(apiName as Api);
 	if (!impl) throw new Error(`keypool: no API provider registered for api: ${apiName}`);
+	// Auth style: "api-key" providers want the key in x-api-key (some reject
+	// Authorization entirely); bearer is the pi-ai default and needs no help.
+	const authStyle = pool.config.auth ?? "bearer";
 
 	return function rotatingStreamSimple(
 		model: Model<Api>,
@@ -59,6 +62,7 @@ export function createRotatingStreamSimple(pool: KeyPool, apiName: string, notif
 					const attemptOptions: SimpleStreamOptions = {
 						...options,
 						apiKey: lease.key,
+						headers: authStyle === "api-key" ? { ...options?.headers, "x-api-key": lease.key } : options?.headers,
 						onResponse: (response) => {
 							captured.status = response.status;
 							const ra = response.headers?.["retry-after"];

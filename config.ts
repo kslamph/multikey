@@ -8,6 +8,26 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import type { AuthStyle } from "./probe.ts";
+
+/** Safe model defaults applied when a spec doesn't say otherwise (edit in keypool.json). */
+export const DEFAULT_CONTEXT_WINDOW = 128_000;
+export const DEFAULT_MAX_TOKENS = 16_384;
+export const DEFAULT_INPUT: ("text" | "image")[] = ["text"];
+
+export const KNOWN_API_TYPES = [
+	"openai-completions",
+	"openai-responses",
+	"anthropic-messages",
+	"google-generative-ai",
+	"mistral-conversations",
+	"openai-codex-responses",
+	"azure-openai-responses",
+	"google-vertex",
+	"bedrock-converse-stream",
+	"pi-messages",
+] as const;
 
 export interface PoolKeyConfig {
 	/** The literal API key. */
@@ -40,6 +60,8 @@ export interface PoolConfig {
 	baseUrl: string;
 	/** Streaming API type, e.g. "openai-completions". Default: openai-completions. */
 	api?: string;
+	/** Auth header style. Default: bearer (Authorization: Bearer). "api-key" sends x-api-key instead. */
+	auth?: AuthStyle;
 	/** Provider-level compat defaults merged into every model. */
 	compat?: Record<string, unknown>;
 	headers?: Record<string, string>;
@@ -61,7 +83,6 @@ export function configPath(): string {
 
 const DEFAULT_COOLDOWN_MS = 20_000;
 const DEFAULT_INVALID_KEY_COOLDOWN_MS = 600_000;
-
 /**
  * First-run seed: discover pools from ~/.pi/agent/models.json instead of shipping
  * any baked-in credentials. A pool is created for every group of providers that
@@ -132,8 +153,8 @@ function mergeModel(base: PoolModelConfig | undefined, extra: PoolModelConfig): 
 	const merged: PoolModelConfig = { ...base };
 	for (const [key, value] of Object.entries(extra)) {
 		if (value === undefined) continue;
-		const current = (base as Record<string, unknown>)[key];
-		if (current === undefined || current === null) (merged as Record<string, unknown>)[key] = value;
+		const current = (base as unknown as Record<string, unknown>)[key];
+		if (current === undefined || current === null) (merged as unknown as Record<string, unknown>)[key] = value;
 	}
 	// Prefer a definition that actually declares the sizing fields over a stub.
 	if (base.contextWindow === undefined && extra.contextWindow !== undefined) merged.contextWindow = extra.contextWindow;
@@ -200,7 +221,7 @@ function discoverPools(): PoolConfig[] {
 			id: poolId,
 			name: `${primary.cfg.name ?? primary.id} (Key Pool)`,
 			baseUrl,
-			api: bucket.find((entry) => entry.cfg.api)?.api ?? "openai-completions",
+			api: bucket.find((entry) => entry.cfg.api)?.cfg.api ?? "openai-completions",
 			compat: primary.cfg.compat,
 			headers: primary.cfg.headers,
 			cooldownMs: DEFAULT_COOLDOWN_MS,
@@ -258,6 +279,7 @@ function normalizePool(pool: PoolConfig): PoolConfig {
 		name: pool.name ?? pool.id,
 		baseUrl: pool.baseUrl,
 		api: pool.api ?? "openai-completions",
+		auth: pool.auth === "api-key" ? "api-key" : undefined,
 		compat: pool.compat,
 		headers: pool.headers,
 		cooldownMs: typeof pool.cooldownMs === "number" && pool.cooldownMs >= 0 ? pool.cooldownMs : DEFAULT_COOLDOWN_MS,
@@ -271,20 +293,22 @@ function normalizePool(pool: PoolConfig): PoolConfig {
 }
 
 /** Convert a pool config into pi ProviderModelConfig-style definitions (provider-level compat merged in). */
-export function toProviderModels(pool: PoolConfig): Record<string, unknown>[] {
-	return pool.models.map((m) => ({
-		id: m.id,
-		name: m.name ?? m.id,
-		api: m.api,
-		baseUrl: m.baseUrl,
-		reasoning: m.reasoning ?? true,
-		thinkingLevelMap: m.thinkingLevelMap,
-		input: m.input ?? ["text"],
-		cost: m.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: m.contextWindow ?? 128_000,
-		maxTokens: m.maxTokens ?? 16_384,
-		compat: mergeCompat(pool.compat, m.compat),
-	}));
+export function toProviderModels(pool: PoolConfig): ProviderModelConfig[] {
+	return pool.models.map(
+		(m): ProviderModelConfig => ({
+			id: m.id,
+			name: m.name ?? m.id,
+			api: m.api,
+			baseUrl: m.baseUrl,
+			reasoning: m.reasoning ?? true,
+			thinkingLevelMap: m.thinkingLevelMap as ProviderModelConfig["thinkingLevelMap"],
+			input: m.input ?? DEFAULT_INPUT,
+			cost: m.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: m.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+			maxTokens: m.maxTokens ?? DEFAULT_MAX_TOKENS,
+			compat: mergeCompat(pool.compat, m.compat) as ProviderModelConfig["compat"],
+		}),
+	);
 }
 
 function mergeCompat(

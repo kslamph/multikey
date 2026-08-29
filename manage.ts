@@ -3,10 +3,22 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { maskKey, type KeypoolConfig, type PoolConfig, type PoolKeyConfig, type PoolModelConfig } from "./config.ts";
+import { getApiProvider, type Api } from "@earendil-works/pi-ai";
+import {
+	DEFAULT_CONTEXT_WINDOW,
+	DEFAULT_INPUT,
+	DEFAULT_MAX_TOKENS,
+	KNOWN_API_TYPES,
+	maskKey,
+	type KeypoolConfig,
+	type PoolConfig,
+	type PoolKeyConfig,
+	type PoolModelConfig,
+} from "./config.ts";
 import type { KeyPool } from "./pool.ts";
 import { PRESETS, findPreset, poolFromPreset, type Preset } from "./presets.ts";
-import { inputNumber, pickMany, selectOne, showInfo } from "./tui.ts";
+import { probeEndpoint, type ProbeResult, type RemoteModel } from "./probe.ts";
+import { inputNumber, pickMany, selectOne, showInfo, withProgress } from "./tui.ts";
 
 type CommandContext = Parameters<Parameters<ExtensionAPI["registerCommand"]>[1]["handler"]>[1];
 
@@ -15,6 +27,7 @@ export interface ManagerHooks {
 	pools: Map<string, KeyPool>;
 	saveAndReregister(poolId: string): void;
 	removePool(poolId: string): void;
+	reloadFromDisk(): void;
 	notify(message: string): void;
 }
 
@@ -22,11 +35,50 @@ const DEFAULT_MODEL_TEMPLATE: PoolModelConfig = {
 	id: "new-model",
 	name: "new-model",
 	reasoning: true,
-	input: ["text"],
+	input: DEFAULT_INPUT,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-	contextWindow: 128_000,
-	maxTokens: 16_384,
+	contextWindow: DEFAULT_CONTEXT_WINDOW,
+	maxTokens: DEFAULT_MAX_TOKENS,
 };
+
+/** True when the pool's api names a registered pi-ai streaming implementation. */
+function isKnownApi(api: string | undefined): boolean {
+	return getApiProvider((api ?? "openai-completions") as Api) !== undefined;
+}
+
+function firstEnabledKey(pool: PoolConfig): string | undefined {
+	return pool.keys.find((k) => k.enabled !== false)?.key;
+}
+
+/** Convert a probed remote model into a pool model, filling safe defaults. */
+function remoteToPoolModel(remote: RemoteModel): PoolModelConfig {
+	return {
+		...DEFAULT_MODEL_TEMPLATE,
+		id: remote.id,
+		name: remote.name ?? remote.id,
+		contextWindow: remote.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+		maxTokens: remote.maxTokens ?? DEFAULT_MAX_TOKENS,
+		input: remote.input ?? DEFAULT_INPUT,
+	};
+}
+
+function describeRemote(m: RemoteModel): string {
+	const bits: string[] = [];
+	if (m.contextWindow) bits.push(`ctx ${(m.contextWindow / 1000).toLocaleString()}k`);
+	if (m.input?.includes("image")) bits.push("image in");
+	if (m.reasoning === true) bits.push("reasoning");
+	return bits.join(" · ");
+}
+
+function describeAuth(probe: ProbeResult): string {
+	if (probe.authStatus === "confirmed") {
+		return probe.auth === "bearer" ? "key verified via Authorization: Bearer ✓" : "key verified via x-api-key ✓";
+	}
+	if (probe.authStatus === "rejected") return "⚠ endpoint rejected the key (401/403) — double-check it";
+	return probe.auth === "bearer"
+		? "endpoint did not verify the key (open endpoint) — using default Bearer auth"
+		: "using x-api-key auth (could not fully verify)";
+}
 
 export async function runManager(pi: ExtensionAPI, ctx: CommandContext, hooks: ManagerHooks): Promise<void> {
 	for (;;) {
@@ -71,7 +123,9 @@ export async function runManager(pi: ExtensionAPI, ctx: CommandContext, hooks: M
 				pools.map((p) => ({
 					value: p.id,
 					label: p.id,
-					suffix: p.name && p.name !== p.id ? ` — ${p.name}` : "",
+					suffix:
+						(p.name && p.name !== p.id ? ` — ${p.name}` : "") +
+						(!isKnownApi(p.api) ? "  ⚠ broken api" : p.keys.length === 0 || p.models.length === 0 ? "  (incomplete)" : ""),
 					description: `${p.baseUrl} · ${p.keys.length} keys · ${p.models.length} models`,
 				})),
 			);
@@ -125,14 +179,37 @@ async function poolMenu(ctx: CommandContext, hooks: ManagerHooks, poolId: string
 	for (;;) {
 		const pool = hooks.config.pools.find((p) => p.id === poolId);
 		if (!pool) return;
-		const action = await selectOne(ctx, `Pool: ${pool.id}`, [
+		const incomplete = pool.keys.length === 0 || pool.models.length === 0;
+		const apiBroken = !isKnownApi(pool.api);
+		const items: { value: string; label: string; suffix?: string; description?: string }[] = [];
+		if (apiBroken) {
+			items.push({
+				value: "fixapi",
+				label: "⚠ Fix API type…",
+				description: `"${pool.api}" is not a known pi API — this provider can't register until fixed`,
+			});
+		}
+		items.push(
 			{ value: "keys", label: "Keys…", description: pool.keys.map((k) => `${k.label ?? maskKey(k.key)}${k.enabled === false ? " (disabled)" : ""}`).join(", ") || "none" },
-			{ value: "models", label: "Models…", description: `${pool.models.length} models` },
-			{ value: "settings", label: "Endpoint & settings…", description: `${pool.baseUrl} · api: ${pool.api ?? "openai-completions"}` },
+			{ value: "models", label: "Models…", description: `${pool.models.length} models${pool.models.length === 0 ? " — provider stays hidden until it has models" : ""}` },
+			{ value: "settings", label: "Endpoint & settings…", description: `${pool.baseUrl} · api: ${pool.api ?? "openai-completions"}${incomplete ? " · ⚠ incomplete" : ""}` },
 			{ value: "delete", label: "Delete pool", description: "Removes the provider from pi and the config file" },
 			{ value: "back", label: "Back" },
-		]);
+		);
+		const action = await selectOne(ctx, `Pool: ${pool.id}${apiBroken ? "  ⚠ broken api" : incomplete ? "  (incomplete)" : ""}`, items);
 		if (action === null || action === "back") return;
+		if (action === "fixapi") {
+			const api = await selectOne(ctx, "API type (streaming protocol)", [
+				...KNOWN_API_TYPES.map((t) => ({ value: t, label: t })),
+				{ value: "__other", label: "Other (type it)…", description: "Free text, for custom-registered pi APIs" },
+			]);
+			if (api && api !== "__other") {
+				pool.api = api;
+				hooks.saveAndReregister(pool.id);
+				hooks.notify(`keypool[${pool.id}]: api set to ${api}`);
+			}
+			continue;
+		}
 		if (action === "keys") await keysMenu(ctx, hooks, pool);
 		else if (action === "models") await modelsMenu(ctx, hooks, pool);
 		else if (action === "settings") await settingsMenu(ctx, hooks, pool);
@@ -240,6 +317,20 @@ async function modelsMenu(ctx: CommandContext, hooks: ManagerHooks, pool: PoolCo
 		]);
 		if (action === null || action === "__back") return;
 		if (action === "__add") {
+			const how = await selectOne(ctx, "Add model", [
+				{ value: "fetch", label: "Fetch from endpoint (/models)…", description: `Pick from models ${pool.baseUrl} offers` },
+				{ value: "manual", label: "Enter manually (JSON)…", description: "Type an id, edit the full spec" },
+			]);
+			if (how === "fetch") {
+				const added = await fetchAndPickModels(ctx, hooks, pool);
+				if (added && added.length > 0) {
+					pool.models.push(...added);
+					hooks.saveAndReregister(pool.id);
+					hooks.notify(`keypool[${pool.id}]: added ${added.length} model(s): ${added.map((m) => m.id).join(", ")}`);
+				}
+				continue;
+			}
+			if (how === null) continue;
 			const id = await ctx.ui.input("Model id", "e.g. deepseek-v4-flash");
 			if (id === undefined || !id.trim()) continue;
 			if (pool.models.some((m) => m.id === id.trim())) {
@@ -385,6 +476,7 @@ async function settingsMenu(ctx: CommandContext, hooks: ManagerHooks, pool: Pool
 			{ value: "name", label: "Display name…", description: pool.name ?? pool.id },
 			{ value: "baseUrl", label: "Base URL…", description: pool.baseUrl },
 			{ value: "api", label: "API type…", description: pool.api ?? "openai-completions" },
+			{ value: "auth", label: "Auth style…", description: pool.auth === "api-key" ? "x-api-key header" : "Authorization: Bearer (default)" },
 			{ value: "cooldownMs", label: "429 cooldown (ms)…", description: String(pool.cooldownMs ?? 20_000) },
 			{ value: "invalidKeyCooldownMs", label: "Invalid-key cooldown (ms)…", description: String(pool.invalidKeyCooldownMs ?? 600_000) },
 			{ value: "compat", label: "Provider compat (JSON)…", description: summarizeJson(pool.compat) },
@@ -406,9 +498,27 @@ async function settingsMenu(ctx: CommandContext, hooks: ManagerHooks, pool: Pool
 				hooks.saveAndReregister(pool.id);
 			}
 		} else if (action === "api") {
-			const api = await ctx.ui.input("API type", pool.api ?? "openai-completions");
-			if (api !== undefined && api.trim()) {
-				pool.api = api.trim();
+			const api = await selectOne(ctx, "API type (streaming protocol)", [
+				...KNOWN_API_TYPES.map((t) => ({ value: t, label: t })),
+				{ value: "__other", label: "Other (type it)…", description: "Free text, for custom-registered pi APIs" },
+			]);
+			if (api === "__other") {
+				const custom = await ctx.ui.input("API type", pool.api ?? "openai-completions");
+				if (custom !== undefined && custom.trim()) {
+					pool.api = custom.trim();
+					hooks.saveAndReregister(pool.id);
+				}
+			} else if (api !== null) {
+				pool.api = api;
+				hooks.saveAndReregister(pool.id);
+			}
+		} else if (action === "auth") {
+			const auth = await selectOne(ctx, "Auth style (how the API key is sent)", [
+				{ value: "bearer", label: "Authorization: Bearer (default)", description: "Used by most OpenAI-compatible endpoints" },
+				{ value: "api-key", label: "x-api-key header", description: "Used by some gateways (Anthropic-style)" },
+			]);
+			if (auth !== null) {
+				pool.auth = auth === "api-key" ? "api-key" : undefined;
 				hooks.saveAndReregister(pool.id);
 			}
 		} else if (action === "cooldownMs") {
@@ -442,7 +552,7 @@ async function addPoolWizard(ctx: CommandContext, hooks: ManagerHooks): Promise<
 			label: `Preset: ${p.name}`,
 				description: `${p.description}\n${p.baseUrl}`,
 		})),
-		{ value: "custom", label: "Custom…", description: "Enter endpoint, API type, and models yourself" },
+		{ value: "custom", label: "Custom…", description: "Enter endpoint + keys; auth is auto-probed and models fetched" },
 	]);
 	if (choice === null) return;
 	if (choice === "custom") {
@@ -453,16 +563,29 @@ async function addPoolWizard(ctx: CommandContext, hooks: ManagerHooks): Promise<
 	if (preset) await addPresetPool(ctx, hooks, preset);
 }
 
-async function askPoolId(ctx: CommandContext, hooks: ManagerHooks, suggested: string): Promise<string | undefined> {
+/**
+ * Ask for a pool id exactly once. If it collides with an existing pool, offer
+ * to open that pool instead of silently re-prompting (the old double-prompt).
+ */
+async function askPoolId(
+	ctx: CommandContext,
+	hooks: ManagerHooks,
+	suggested: string,
+): Promise<{ kind: "new"; id: string } | { kind: "existing"; id: string } | undefined> {
 	for (;;) {
-		const id = await ctx.ui.input("Provider id in pi", suggested);
+		const id = await ctx.ui.input("Provider id in pi", suggested || "e.g. bai, nvidia, opencode");
 		if (id === undefined) return undefined;
-		const poolId = id.trim() || suggested;
-		if (hooks.config.pools.some((p) => p.id === poolId)) {
-			hooks.notify(`keypool: pool "${poolId}" already exists — pick another id`);
-			continue;
-		}
-		return poolId;
+		const poolId = (id.trim() || suggested).trim();
+		if (!poolId) continue;
+		if (!hooks.config.pools.some((p) => p.id === poolId)) return { kind: "new", id: poolId };
+
+		const choice = await selectOne(ctx, `Pool "${poolId}" already exists`, [
+			{ value: "manage", label: `Open existing pool "${poolId}"…`, description: "Keys, models, endpoint settings" },
+			{ value: "rename", label: "Use a different id…" },
+			{ value: "cancel", label: "Cancel" },
+		]);
+		if (choice === "manage") return { kind: "existing", id: poolId };
+		if (choice !== "rename") return undefined;
 	}
 }
 
@@ -491,12 +614,41 @@ async function askKeys(ctx: CommandContext, hooks: ManagerHooks, hint?: string):
 }
 
 async function addPresetPool(ctx: CommandContext, hooks: ManagerHooks, preset: Preset): Promise<void> {
-	const poolId = await askPoolId(ctx, hooks, preset.defaultPoolId);
-	if (poolId === undefined) return;
+	const idChoice = await askPoolId(ctx, hooks, preset.defaultPoolId);
+	if (idChoice === undefined) return;
+	if (idChoice.kind === "existing") {
+		await poolMenu(ctx, hooks, idChoice.id);
+		return;
+	}
+	const poolId = idChoice.id;
 	const keys = await askKeys(ctx, hooks, preset.keyHint);
 	if (keys === undefined) return;
 
+	// Light-touch verification: probe the preset endpoint with the first key.
+	// The model specs are curated, so this is only a key sanity check.
+	let probe: ProbeResult | undefined;
+	let authNote = "keys not verified (offline?)";
+	try {
+		probe = await withProgress(ctx, `Verifying key against ${preset.baseUrl}…`, (update) =>
+			probeEndpoint(preset.baseUrl, keys[0]!, {
+				chatModelId: preset.models[0]?.id,
+				onLog: (line) => update(line.trimEnd()),
+			}),
+		);
+		authNote = describeAuth(probe);
+		if (probe.authStatus === "rejected") {
+			const proceed = await ctx.ui.confirm(
+				"Key rejected",
+				`The endpoint answered 401/403 for your key. Save the pool anyway (you can fix keys later)?`,
+			);
+			if (!proceed) return;
+		}
+	} catch {
+		// Probe must never block pool creation.
+	}
+
 	const pool = poolFromPreset(preset, poolId, keys);
+	if (probe?.authStatus === "confirmed" && probe.auth === "api-key") pool.auth = "api-key";
 	hooks.config.pools.push(pool);
 	hooks.saveAndReregister(poolId);
 	hooks.notify(
@@ -505,7 +657,7 @@ async function addPresetPool(ctx: CommandContext, hooks: ManagerHooks, preset: P
 	await showInfo(ctx, `Preset applied: ${preset.name}`, [
 		`Provider:  ${poolId}/<model-id>  (e.g. ${poolId}/${pool.models[0]?.id ?? "..."})`,
 		`Endpoint:  ${pool.baseUrl}`,
-		`Keys:      ${pool.keys.length} loaded`,
+		`Keys:      ${pool.keys.length} loaded — ${authNote}`,
 		`Models:    ${pool.models.map((m) => m.id).join(", ")}`,
 		"",
 		"Add more keys anytime: /keypool → Manage pools → Keys.",
@@ -514,34 +666,205 @@ async function addPresetPool(ctx: CommandContext, hooks: ManagerHooks, preset: P
 }
 
 async function addCustomPool(ctx: CommandContext, hooks: ManagerHooks): Promise<void> {
-	const id = await ctx.ui.input("Provider id", "e.g. bai, nvidia, opencode");
-	if (id === undefined || !id.trim()) return;
-	const poolId = await (async () => {
-		if (!hooks.config.pools.some((p) => p.id === id.trim())) return id.trim();
-		hooks.notify(`keypool: pool "${id.trim()}" already exists — pick another id`);
-		return await askPoolId(ctx, hooks, id.trim());
-	})();
-	if (poolId === undefined) return;
+	// 1. Provider id — asked exactly once; collisions offer to open the pool.
+	const idChoice = await askPoolId(ctx, hooks, "");
+	if (idChoice === undefined) return;
+	if (idChoice.kind === "existing") {
+		await poolMenu(ctx, hooks, idChoice.id);
+		return;
+	}
+	const poolId = idChoice.id;
+
+	// 2. Base URL.
 	const baseUrl = await ctx.ui.input("Base URL", "https://api.example.com/v1");
 	if (baseUrl === undefined || !baseUrl.trim()) return;
-	const api = await ctx.ui.input("API type", "openai-completions");
-	if (api === undefined) return;
+
+	// 3. API key(s). No "API type" question: auth is auto-probed next.
 	const keys = await askKeys(ctx, hooks);
 	if (keys === undefined) return;
 
+	// 4. Probe: detect Bearer vs x-api-key, verify the key, list /models.
+	const probe = await withProgress(ctx, `Probing ${baseUrl.trim()}…`, (update) =>
+		probeEndpoint(baseUrl.trim(), keys[0]!, { onLog: (line) => update(line.trimEnd()) }),
+	);
+
+	// 5. Pick models (multi-select straight from the server's list).
+	const models = await pickModelsForNewPool(ctx, hooks, poolId, baseUrl.trim(), keys[0]!, probe);
+	if (models === undefined) return; // user cancelled — nothing was saved (atomic wizard)
+
+	// 6. Safe defaults immediately; common params (context, input modes,
+	//    max tokens) optionally tuned here; everything else stays editable in
+	//    keypool.json.
+	let tuned = false;
+	if (models.length > 0) {
+		const params = await selectOne(ctx, "Model parameters", [
+			{
+				value: "defaults",
+				label: "Use safe defaults (recommended)",
+				description: `${DEFAULT_CONTEXT_WINDOW / 1000}k context · text input · ${DEFAULT_MAX_TOKENS / 1000}k max output — edit later via Models menu or keypool.json`,
+			},
+			{ value: "tune", label: "Tune common params now…", description: "Context size, input modes, max output — per model" },
+		]);
+		// null (esc) falls back to safe defaults rather than cancelling the wizard.
+		if (params === "tune") {
+			await tuneCommonParams(ctx, models);
+			tuned = true;
+		}
+	}
+
+	// 7. Save atomically — only now does the pool enter the config.
 	const pool: PoolConfig = {
 		id: poolId,
 		name: poolId,
 		baseUrl: baseUrl.trim(),
-		api: api.trim() || "openai-completions",
+		api: "openai-completions",
+		auth: probe.auth === "api-key" ? "api-key" : undefined,
 		cooldownMs: 20_000,
 		invalidKeyCooldownMs: 600_000,
-		keys: keys.map((key, i) => ({ key, label: `key-${i + 1}`, enabled: true } satisfies PoolKeyConfig)),
-		models: [],
+		keys: keys.map((key, i) => ({ key, label: `key-${i + 1}`, enabled: true }) satisfies PoolKeyConfig),
+		models,
 	};
 	hooks.config.pools.push(pool);
 	hooks.saveAndReregister(poolId);
-	hooks.notify(`keypool: created pool "${poolId}" with ${keys.length} key(s) — add models next`);
 
-	await modelsMenu(ctx, hooks, pool);
+	const modelSummary = models.length > 0 ? models.map((m) => m.id).join(", ") : "(none yet — add via Models menu)";
+	await showInfo(ctx, `Pool created: ${poolId}`, [
+		`Endpoint:  ${pool.baseUrl}`,
+		`Auth:      ${describeAuth(probe)}`,
+		`Keys:      ${pool.keys.length} loaded`,
+		`Models:    ${modelSummary}${tuned ? " (tuned)" : models.length > 0 ? " (safe defaults)" : ""}`,
+		"",
+		"Use it as: /model  →  " + poolId + "/<model-id>",
+		`Advanced params (thinking maps, compat, cost): edit ${process.env.KEYPOOL_CONFIG ?? "~/.pi/agent/keypool.json"},`,
+		"then /keypool → Reload config from disk.",
+	]);
+}
+
+/**
+ * Model selection step of the add wizard. Returns pool models, or undefined
+ * when the user cancelled (so the wizard stays atomic — nothing saved). An
+ * empty array means "save the pool without models" (explicit choice).
+ */
+async function pickModelsForNewPool(
+	ctx: CommandContext,
+	hooks: ManagerHooks,
+	poolId: string,
+	baseUrl: string,
+	key: string,
+	probe: ProbeResult,
+): Promise<PoolModelConfig[] | undefined> {
+	for (;;) {
+		let choice: string | null;
+		if (probe.ok && probe.models && probe.models.length > 0) {
+			// Straight to multi-select: every offered model preselected.
+			const selectedIds = await pickMany(
+				ctx,
+				`Add models from ${probe.modelsUrl} — space to toggle, enter to confirm`,
+				probe.models.map((m) => ({ value: m.id, label: m.id, description: describeRemote(m) })),
+				{ preselected: probe.models.map((m) => m.id) },
+			);
+			if (selectedIds === null) return undefined;
+			const byId = new Map(probe.models.map((m) => [m.id, m]));
+			return selectedIds.map((id) => remoteToPoolModel(byId.get(id)!));
+		}
+
+		// No model list available — offer paths instead of a dead end.
+		choice = await selectOne(ctx, "Could not list models from the endpoint", [
+			{ value: "manual", label: "Enter model ids manually…", description: "Type ids, edit specs as JSON" },
+			{ value: "retry", label: "Retry probe" },
+			{ value: "empty", label: `Create "${poolId}" without models`, description: "Add models later via /keypool → Models" },
+			{ value: "cancel", label: "Cancel (nothing saved)" },
+		]);
+		if (choice === null || choice === "cancel") return undefined;
+		if (choice === "retry") {
+			const retried = await withProgress(ctx, "Probing again…", (update) =>
+				probeEndpoint(baseUrl, key, { onLog: (line) => update(line.trimEnd()) }),
+			);
+			// Merge results, keeping the original probe's key/auth findings.
+			if (retried.ok) {
+				probe.ok = true;
+				probe.models = retried.models;
+				probe.modelsUrl = retried.modelsUrl;
+			}
+			continue;
+		}
+		if (choice === "empty") return [];
+		if (choice === "manual") {
+			const manual = await collectManualModels(ctx, hooks);
+			if (manual === undefined) continue; // back to this menu
+			return manual;
+		}
+	}
+}
+
+/** Loop of manual model entries (id prompt + JSON editor). undefined = user backed out. */
+async function collectManualModels(ctx: CommandContext, hooks: ManagerHooks): Promise<PoolModelConfig[] | undefined> {
+	const models: PoolModelConfig[] = [];
+	for (;;) {
+		const id = await ctx.ui.input(`Model id #${models.length + 1}`, "e.g. deepseek-v4-flash  (empty = done)");
+		if (id === undefined) return undefined;
+		if (!id.trim()) return models;
+		const model = { ...DEFAULT_MODEL_TEMPLATE, id: id.trim(), name: id.trim() };
+		const edited = await editModelJson(ctx, model);
+		if (edited) models.push(edited);
+	}
+}
+
+/** Per-model quick tune of the common params: context size, input modes, max output. */
+async function tuneCommonParams(ctx: CommandContext, models: PoolModelConfig[]): Promise<void> {
+	for (let i = 0; i < models.length; i++) {
+		const model = models[i]!;
+		const tag = `[${i + 1}/${models.length}] ${model.id}`;
+		const contextWindow = await inputNumber(ctx, `${tag} — context window (tokens)`, model.contextWindow ?? DEFAULT_CONTEXT_WINDOW);
+		if (contextWindow !== undefined) model.contextWindow = contextWindow;
+		const input = await pickMany(
+			ctx,
+			`${tag} — input modalities`,
+			[
+				{ value: "text", label: "text" },
+				{ value: "image", label: "image" },
+			],
+			{ preselected: model.input ?? DEFAULT_INPUT },
+		);
+		if (input && input.length > 0) model.input = input as ("text" | "image")[];
+		const maxTokens = await inputNumber(ctx, `${tag} — max output tokens`, model.maxTokens ?? DEFAULT_MAX_TOKENS);
+		if (maxTokens !== undefined) model.maxTokens = maxTokens;
+	}
+}
+
+/**
+ * Fetch the live /models list for an existing pool and let the user pick new
+ * models to add (duplicates filtered). Returns added models, or undefined on cancel.
+ */
+async function fetchAndPickModels(ctx: CommandContext, hooks: ManagerHooks, pool: PoolConfig): Promise<PoolModelConfig[] | undefined> {
+	const key = firstEnabledKey(pool);
+	if (!key) {
+		hooks.notify(`keypool[${pool.id}]: add a key first — the probe needs one`);
+		return undefined;
+	}
+	const probe = await withProgress(ctx, `Fetching models from ${pool.baseUrl}…`, (update) =>
+		probeEndpoint(pool.baseUrl, key, {
+			authHint: pool.auth,
+			chatModelId: pool.models[0]?.id,
+			onLog: (line) => update(line.trimEnd()),
+		}),
+	);
+	if (!probe.ok || !probe.models || probe.models.length === 0) {
+		await showInfo(ctx, "No models found", probe.log.length > 0 ? probe.log : ["The endpoint did not return a usable model list."]);
+		return undefined;
+	}
+	const existing = new Set(pool.models.map((m) => m.id));
+	const fresh = probe.models.filter((m) => !existing.has(m.id));
+	if (fresh.length === 0) {
+		hooks.notify(`keypool[${pool.id}]: all ${probe.models.length} listed models are already added`);
+		return undefined;
+	}
+	const selectedIds = await pickMany(
+		ctx,
+		`Add models from ${probe.modelsUrl} — ${fresh.length} new (${probe.models.length - fresh.length} already added)`,
+		fresh.map((m) => ({ value: m.id, label: m.id, description: describeRemote(m) })),
+	);
+	if (selectedIds === null) return undefined;
+	const byId = new Map(fresh.map((m) => [m.id, m]));
+	return selectedIds.map((id) => remoteToPoolModel(byId.get(id)!));
 }

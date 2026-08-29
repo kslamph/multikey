@@ -10,6 +10,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getApiProvider, type Api } from "@earendil-works/pi-ai";
 import { loadConfig, saveConfig, toProviderModels, type KeypoolConfig, type PoolConfig } from "./config.ts";
 import { KeyPool } from "./pool.ts";
 import { createRotatingStreamSimple } from "./stream.ts";
@@ -40,8 +41,20 @@ export default function keypool(pi: ExtensionAPI) {
 		}
 	};
 
-	function registerPool(pool: PoolConfig) {
-		if (pool.keys.length === 0 || pool.models.length === 0) return;
+	/**
+	 * Register a pool as a pi provider. Returns undefined on success, or a
+	 * human-readable reason why the pool was skipped (unknown api, incomplete).
+	 */
+	function registerPool(pool: PoolConfig): string | undefined {
+		if (pool.keys.length === 0 || pool.models.length === 0) {
+			return pool.keys.length === 0 ? "no API keys" : "no models";
+		}
+		const api = pool.api ?? "openai-completions";
+		if (!getApiProvider(api as Api)) {
+			// Never throw at startup over a bad api value; report it instead so
+			// the user gets a fix hint (and /keypool marks the pool broken).
+			return `unknown api type "${api}" (edit the pool and pick a valid API type)`;
+		}
 		const keyPool = pools.get(pool.id) ?? new KeyPool(pool);
 		keyPool.updateConfig(pool);
 		pools.set(pool.id, keyPool);
@@ -51,11 +64,12 @@ export default function keypool(pi: ExtensionAPI) {
 			baseUrl: pool.baseUrl,
 			// Real keys are injected per-request by the rotating stream function.
 			apiKey: "keypool-managed",
-			api: pool.api ?? "openai-completions",
+			api,
 			headers: pool.headers,
 			models: toProviderModels(pool),
-			streamSimple: createRotatingStreamSimple(keyPool, pool.api ?? "openai-completions", notify),
+			streamSimple: createRotatingStreamSimple(keyPool, api, notify),
 		});
+		return undefined;
 	}
 
 	function saveAndReregister(poolId: string) {
@@ -71,7 +85,8 @@ export default function keypool(pi: ExtensionAPI) {
 			}
 			return;
 		}
-		registerPool(pool);
+		const error = registerPool(pool);
+		if (error) notify(`keypool[${poolId}]: provider not registered: ${error}`);
 	}
 
 	function removePool(poolId: string) {
@@ -91,7 +106,8 @@ export default function keypool(pi: ExtensionAPI) {
 		const seen = new Set<string>();
 		for (const pool of config.pools) {
 			seen.add(pool.id);
-			registerPool(pool);
+			const error = registerPool(pool);
+			if (error) notify(`keypool[${pool.id}]: provider not registered: ${error}`);
 		}
 		for (const id of [...pools.keys()]) {
 			if (!seen.has(id)) removePool(id);
@@ -99,17 +115,24 @@ export default function keypool(pi: ExtensionAPI) {
 	}
 
 	// Register every pool up front so models are available during startup
-	// and to `pi --list-models`.
+	// and to `pi --list-models`. Broken pools are collected for a friendly
+	// session-start hint instead of a bare console error.
+	const skipped: { id: string; reason: string }[] = [];
 	for (const pool of config.pools) {
 		try {
-			registerPool(pool);
+			const error = registerPool(pool);
+			if (error) skipped.push({ id: pool.id, reason: error });
 		} catch (error) {
-			console.error(`[keypool] failed to register provider "${pool.id}": ${error instanceof Error ? error.message : String(error)}`);
+			skipped.push({ id: pool.id, reason: error instanceof Error ? error.message : String(error) });
 		}
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
 		ui = ctx.ui;
+		for (const { id, reason } of skipped) {
+			notify(`keypool: provider "${id}" not available — ${reason}. Fix it via /keypool → Manage pools.`);
+		}
+		skipped.length = 0;
 		if (created) {
 			const path = process.env.KEYPOOL_CONFIG ?? "~/.pi/agent/keypool.json";
 			if (config.pools.length > 0) {

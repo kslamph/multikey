@@ -162,11 +162,16 @@ export async function showInfo(ctx: CommandContext, title: string, lines: string
 }
 
 /** Simple toggle list (multi-select), returns selected values or null on cancel. */
-export async function pickMany(ctx: CommandContext, title: string, items: SelectItem[]): Promise<string[] | null> {
+export async function pickMany(
+	ctx: CommandContext,
+	title: string,
+	items: SelectItem[],
+	options?: { preselected?: string[] },
+): Promise<string[] | null> {
 	return await ctx.ui.custom<string[] | null>((tui, theme, _kb, done) => {
 		let cursor = 0;
 		let query = "";
-		const selected = new Set<string>();
+		const selected = new Set<string>(options?.preselected ?? []);
 		let cachedLines: string[] | undefined;
 		const maxVisible = 12;
 
@@ -270,4 +275,75 @@ export async function inputNumber(ctx: CommandContext, title: string, current: n
 	const value = Number(raw.trim());
 	if (!Number.isFinite(value) || value <= 0) return undefined;
 	return value;
+}
+
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/**
+ * Run an async task behind a live status panel: `update(line)` appends progress
+ * lines while the task runs; the panel closes itself with the task's result.
+ */
+export async function withProgress<T>(
+	ctx: CommandContext,
+	title: string,
+	task: (update: (line: string) => void) => Promise<T>,
+): Promise<T> {
+	return await ctx.ui.custom<T>((tui, theme, _kb, done) => {
+		const lines: string[] = [];
+		let finished = false;
+		let cachedLines: string[] | undefined;
+		let frame = 0;
+		const spinner = setInterval(() => {
+			if (finished) return;
+			frame = (frame + 1) % SPINNER_FRAMES.length;
+			tui.requestRender();
+		}, 90);
+
+		function update(line: string) {
+			lines.push(line);
+			cachedLines = undefined;
+			tui.requestRender();
+		}
+
+		void (async () => {
+			try {
+				const result = await task(update);
+				finished = true;
+				clearInterval(spinner);
+				done(result);
+			} catch (error) {
+				finished = true;
+				clearInterval(spinner);
+				update(`error: ${error instanceof Error ? error.message : String(error)}`);
+				// Give the user a moment to see the error before the panel closes.
+				setTimeout(() => done(undefined as T), 2500);
+			}
+		})();
+
+		return {
+			render(width: number) {
+				if (cachedLines) return cachedLines;
+				const w = Math.max(10, width);
+				const out: string[] = [];
+				const add = (line = "") => out.push(truncateToWidth(line, w));
+				const border = theme.fg("accent", "─".repeat(w));
+				add(border);
+				add(` ${theme.fg("accent", theme.bold(title))} ${finished ? "" : theme.fg("accent", SPINNER_FRAMES[frame]!)}`);
+				add();
+				for (const line of lines) add(` ${theme.fg("dim", line)}`);
+				add();
+				add(theme.fg("dim", " working — please wait…"));
+				add(border);
+				cachedLines = out;
+				return out;
+			},
+			invalidate() {
+				cachedLines = undefined;
+			},
+			handleInput() {
+				// Input intentionally ignored while the task runs.
+				if (finished) done(undefined as T);
+			},
+		};
+	});
 }

@@ -1,6 +1,6 @@
 {
 	"name": "pi-keypool",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"description": "One pi provider backed by a pool of API keys: automatic 429 rotation, per-request key leases for concurrent subagents, and a /keypool management TUI",
 	"keywords": ["pi-package", "pi", "pi-extension", "api-keys", "rate-limit", "429", "provider", "key-pool"],
 	"license": "MIT",
@@ -12,6 +12,7 @@
 		"index.ts",
 		"config.ts",
 		"presets.ts",
+		"probe.ts",
 		"pool.ts",
 		"stream.ts",
 		"manage.ts",
