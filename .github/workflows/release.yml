@@ -5,7 +5,7 @@ on:
     tags:
       - 'v*'
 
-# `id-token: write` is required for npm provenance (OIDC-based attestation).
+# `id-token: write` is required for npm trusted publishing (OIDC).
 permissions:
   contents: read
   id-token: write
@@ -20,8 +20,11 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
-          registry-url: https://registry.npmjs.org
+          node-version: '24'
+          package-manager-cache: false # never use caching in release builds
+
+      - name: Ensure npm supports trusted publishing (OIDC)
+        run: npm install -g npm@^11.15.0
 
       - name: Verify tag matches package.json version
         run: |
@@ -36,7 +39,7 @@ jobs:
       - name: Validate tarball contents
         run: npm pack --dry-run
 
-      - name: Publish to npm
+      - name: Publish to npm (trusted publishing via OIDC — no token needed)
         run: |
           # Pre-release tags (v1.0.1-beta.1, v1.0.1-rc.1, ...) go to the `next`
           # dist-tag so `latest` is never polluted by pre-releases.
@@ -45,6 +48,4 @@ jobs:
           case "$TAG_VERSION" in
             *-alpha*|*-beta*|*-rc*|*-next*) DIST_TAG="next" ;;
           esac
-          npm publish --provenance --access public --tag "$DIST_TAG"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          npm publish --access public --tag "$DIST_TAG"
