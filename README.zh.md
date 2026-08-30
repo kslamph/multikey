@@ -54,11 +54,12 @@ DeepSeek / Tencent / 小米官方文档，并对每个 thinking 档位做过实�
 端点 `https://opencode.ai/zen/v1`；密钥从 [opencode.ai/auth](https://opencode.ai/auth) → workspace Keys 获取。
 上下文/最大输出为 **Zen 免费层限制**（models.dev `opencode` provider 与 pi 内置 opencode 目录一致）；
 原始模型更大——MiMo V2.5 = 1M ctx，Hy3 = 262K ctx。
-`muse-spark-1.2-contributor-free` 使用 OpenAI **Responses** API；其余六个使用 chat completions。
+`muse-spark-1.2-contributor-free` 使用 OpenAI **Responses** API；其余七个使用 chat completions。
 
 | 模型 | ctx / max-out | 模态 | 生效 thinking 档位 |
 |---|---|---|---|
 | big-pickle | 200K / 32K | text | 始终思考（无 thinkingLevelMap，与 pi 内置目录一致） |
+| deepseek-v4-flash-free | 200K / 128K | text | off · low · high · max（沿用 b.ai preset 的 deepseek-v4-flash） |
 | mimo-v2.5-free | 200K / 32K | text+image | 始终思考（无 thinkingLevelMap） |
 | hy3-free | 190K / 64K | text | low · medium · high（无 off） |
 | ling-3.0-flash-fin-free | 256K / 32K | text | 始终思考（无 thinkingLevelMap） |
@@ -66,7 +67,7 @@ DeepSeek / Tencent / 小米官方文档，并对每个 thinking 档位做过实�
 | nemotron-3.5-lightning-free | 256K / 256K | text | 始终思考（无 thinkingLevelMap） |
 | muse-spark-1.2-contributor-free | 1M / 128K | text+image | minimal · low · medium · high · xhigh（无 off，Responses API） |
 
-> 以上七个模型在 OpenCode 收集反馈期间均免费（零 token 费用）；数据可能用于改进模型（Nemotron 免费端点为 NVIDIA 试用——请勿提交机密数据）。
+> 以上八个模型在 OpenCode 收集反馈期间均免费（零 token 费用）；数据可能用于改进模型（Nemotron 免费端点为 NVIDIA 试用——请勿提交机密数据）。
 
 新增 preset：在 `presets.ts` 的 `PRESETS` 数组里加一项即可。
 
@@ -125,7 +126,7 @@ JSON 后 `Reload config from disk`。
 │  └─ Delete pool
 ├─ Add pool…
 │  ├─ Preset: B.AI           预置全部模型设定，粘贴 key（自动校验）即可用
-│  ├─ Preset: OpenCode Zen   免费层模型预置（7 个模型），粘贴 key 即可用
+│  ├─ Preset: OpenCode Zen   免费层模型预置（8 个模型），粘贴 key 即可用
 │  └─ Custom…                只填 id + Base URL + key，随后自动探测、多选模型、安全默认值
 └─ Reload config from disk
 ```

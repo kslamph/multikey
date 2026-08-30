@@ -131,7 +131,7 @@ export const PRESETS: Preset[] = [
 	{
 		id: "opencode-zen",
 		name: "OpenCode Zen",
-		description: "opencode.ai/zen free tier — Big Pickle, MiMo V2.5, Hy3, Ling 3.0 Fin, Nemotron 3 Ultra/Lightning, Muse Spark 1.2 (7 free models)",
+		description: "opencode.ai/zen free tier — Big Pickle, DeepSeek V4 Flash, MiMo V2.5, Hy3, Ling 3.0 Fin, Nemotron 3 Ultra/Lightning, Muse Spark 1.2 (8 free models)",
 		defaultPoolId: "zen",
 		baseUrl: "https://opencode.ai/zen/v1",
 		api: "openai-completions",
@@ -146,6 +146,20 @@ export const PRESETS: Preset[] = [
 				input: ["text"],
 				contextWindow: 200_000,
 				maxTokens: 32_000,
+				compat: ZEN_CHAT_COMPAT,
+			},
+			{
+				// DeepSeek V4 Flash on the Zen FREE tier — id confirmed via GET /zen/v1/models
+				// (deepseek-v4-flash-free); serving limits 200K/128K from models.dev `opencode`
+				// provider. Thinking levels mirror the b.ai preset's deepseek-v4-flash
+				// (off/low/high/max; medium & xhigh alias to high server-side).
+				id: "deepseek-v4-flash-free",
+				name: "DeepSeek V4 Flash Free",
+				reasoning: true,
+				input: ["text"],
+				contextWindow: 200_000,
+				maxTokens: 128_000,
+				thinkingLevelMap: levels({ off: "none", low: "low", high: "high", max: "max" }),
 				compat: ZEN_CHAT_COMPAT,
 			},
 			{
