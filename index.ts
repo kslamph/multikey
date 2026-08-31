@@ -11,7 +11,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getApiProvider, type Api } from "@earendil-works/pi-ai";
-import { configPath, loadConfig, saveConfig, toProviderModels, type KeypoolConfig, type PoolConfig } from "./config.ts";
+import { configPath, endpointHeaders, loadConfig, saveConfig, toProviderModels, type KeypoolConfig, type PoolConfig } from "./config.ts";
 import { KeyPool } from "./pool.ts";
 import { createRotatingStreamSimple } from "./stream.ts";
 import { runManager, type ManagerHooks } from "./manage.ts";
@@ -69,7 +69,7 @@ export default function multikey(pi: ExtensionAPI) {
 			// Real keys are injected per-request by the rotating stream function.
 			apiKey: "multikey-managed",
 			api,
-			headers: pool.headers,
+			headers: { ...pool.headers, ...endpointHeaders(pool.baseUrl) },
 			models: toProviderModels(pool),
 			streamSimple: createRotatingStreamSimple(keyPool, api, notify),
 		});

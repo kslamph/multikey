@@ -1,3 +1,5 @@
+import { endpointHeaders } from "./config.ts";
+
 /**
  * Endpoint probing: auto-detect the auth header style and fetch the model list.
  *
@@ -57,11 +59,11 @@ function authHeaders(style: AuthStyle, key: string): Record<string, string> {
 	return style === "bearer" ? { Authorization: `Bearer ${key}` } : { "x-api-key": key };
 }
 
-async function fetchJson(url: string, headers: Record<string, string>, timeoutMs: number): Promise<{ status: number; body?: unknown }> {
+async function fetchJson(url: string, headers: Record<string, string>, timeoutMs: number, baseUrl?: string): Promise<{ status: number; body?: unknown }> {
 	try {
 		const response = await fetch(url, {
 			method: "GET",
-			headers: { Accept: "application/json", ...headers },
+			headers: { Accept: "application/json", ...endpointHeaders(baseUrl ?? url), ...headers },
 			signal: AbortSignal.timeout(timeoutMs),
 		});
 		let body: unknown;
@@ -147,7 +149,7 @@ async function chatProbe(baseUrl: string, style: AuthStyle, key: string, modelId
 	try {
 		const response = await fetch(`${trimSlash(baseUrl)}/chat/completions`, {
 			method: "POST",
-			headers: { "Content-Type": "application/json", ...authHeaders(style, key) },
+			headers: { "Content-Type": "application/json", ...endpointHeaders(baseUrl), ...authHeaders(style, key) },
 			body: JSON.stringify({ model: modelId, max_tokens: 4, messages: [{ role: "user", content: "ping" }] }),
 			signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
 		});
@@ -186,7 +188,7 @@ export async function probeEndpoint(
 			let result: { status: number; body?: unknown };
 			try {
 				emit(`GET ${url} (${style === "bearer" ? "Authorization: Bearer" : "x-api-key"})…`);
-				result = await fetchJson(url, authHeaders(style, key), MODELS_TIMEOUT_MS);
+				result = await fetchJson(url, authHeaders(style, key), MODELS_TIMEOUT_MS, baseUrl);
 			} catch (error) {
 				emit(`   network error: ${error instanceof Error ? error.message : String(error)}`);
 				continue;

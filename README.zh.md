@@ -56,6 +56,8 @@ DeepSeek / Tencent / 小米官方文档，并对每个 thinking 档位做过实�
 原始模型更大——MiMo V2.5 = 1M ctx，Hy3 = 262K ctx。
 `muse-spark-1.2-contributor-free` 使用 OpenAI **Responses** API；其余七个使用 chat completions。
 
+对该端点的请求会自动携带 opencode.ai 期望的 `User-Agent` 头（`opencode/1.15.0 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13`）——只要 pool 的 baseUrl 是 `https://opencode.ai/zen/v1`，探测和真实请求都会附加。
+
 | 模型 | ctx / max-out | 模态 | 生效 thinking 档位 |
 |---|---|---|---|
 | big-pickle | 200K / 32K | text | 始终思考（无 thinkingLevelMap，与 pi 内置目录一致） |

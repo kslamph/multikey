@@ -50,6 +50,8 @@ Built-in presets decouple "model settings" from "keys". The data comes from b.ai
 
 Endpoint `https://opencode.ai/zen/v1`; keys from [opencode.ai/auth](https://opencode.ai/auth) → workspace Keys. Context / max-output are the **Zen free-tier serving limits** (consistent across models.dev `opencode` provider + pi's built-in opencode catalog); the raw models are bigger — MiMo V2.5 = 1M ctx, Hy3 = 262K ctx. `muse-spark-1.2-contributor-free` uses the OpenAI **Responses** API endpoint; the other seven use chat completions.
 
+Requests to this endpoint automatically carry the `User-Agent` header that opencode.ai expects (`opencode/1.15.0 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13`) — appended whenever a pool's baseUrl is `https://opencode.ai/zen/v1`, on both probes and live requests.
+
 | Model | ctx / max-out | Modalities | Supported thinking levels |
 |---|---|---|---|
 | big-pickle | 200K / 32K | text | always-on (no thinkingLevelMap, like pi's catalog) |

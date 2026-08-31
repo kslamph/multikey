@@ -339,3 +339,24 @@ export function maskKey(key: string): string {
 	if (key.length <= 10) return "…";
 	return `${key.slice(0, 6)}…${key.slice(-4)}`;
 }
+
+// ── Endpoint-required headers ────────────────────────────────────────────────
+
+/** OpenCode Zen free tier endpoint that requires a specific User-Agent header. */
+const OPENCODE_ZEN_BASE_URL = "https://opencode.ai/zen/v1";
+const OPENCODE_ZEN_USER_AGENT =
+	"opencode/1.15.0 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13";
+
+/**
+ * Headers that must be sent to known endpoints.
+ *
+ * Currently: OpenCode Zen's free tier endpoint requires this exact User-Agent;
+ * anything else returns an empty object.
+ *
+ * The comparison is case-insensitive and tolerates a trailing slash.
+ */
+export function endpointHeaders(baseUrl: string): Record<string, string> {
+	const normalized = baseUrl.replace(/\/+$/, "").toLowerCase();
+	if (normalized === OPENCODE_ZEN_BASE_URL) return { "User-Agent": OPENCODE_ZEN_USER_AGENT };
+	return {};
+}
