@@ -173,9 +173,4 @@ export default function multikey(pi: ExtensionAPI) {
 		description: "Many API keys per provider: 429 rotation, cooldowns, live status",
 		handler: managerHandler,
 	});
-	// Legacy alias from the pre-rename days — same manager.
-	pi.registerCommand("keypool", {
-		description: "Alias of /multikey",
-		handler: managerHandler,
-	});
 }
