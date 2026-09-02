@@ -1,6 +1,6 @@
 {
 	"name": "pi-multikey",
-	"version": "1.6.0",
+	"version": "1.7.0",
 	"description": "One pi provider backed by many API keys: automatic 429 rotation, per-request key leases for concurrent subagents, and a /multikey management TUI",
 	"keywords": [
 		"pi-package",
@@ -11,7 +11,11 @@
 		"rate-limit",
 		"429",
 		"provider",
-		"key-pool"
+		"key-pool",
+		"bai",
+		"b.ai",
+		"opencode",
+		"multiple"
 	],
 	"license": "MIT",
 	"repository": {
