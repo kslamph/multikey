@@ -151,29 +151,6 @@ Set `agentOverrides` in `settings.json` to the pool provider:
   - other errors → handed back to pi's own retry mechanism.
 - Only when every key is exhausted does it surface the 429 upward, letting pi's own backoff retry as a safety net (by then the earliest cooldown has usually expired).
 
-## Releasing to npm
-
-A GitHub Action (`.github/workflows/release.yml`) auto-publishes to npm on tag push.
-
-1. Bump the version in `package.json` (and commit).
-2. Tag the commit — the tag must match the version, e.g. `v1.0.1`:
-
-   ```bash
-   git tag v1.0.1
-   git push origin v1.0.1
-   ```
-
-3. The workflow verifies tag/version match, dry-runs `npm pack`, then publishes with
-   [npm provenance](https://docs.npmjs.com/generating-provenance-statements).
-
-Setup (once):
-
-- Add an npm **automation** token with `publish` scope as the `NPM_TOKEN` secret
-  in the repo's GitHub **Settings → Secrets and variables → Actions**.
-  (An automation token, not your login token, so 2FA never blocks the action.)
-- The repo and package must be **public** for provenance to work.
-- Pre-release tags like `v1.0.1-beta.1` publish to the `next` dist-tag instead of `latest`.
-
 ## Security note
 
 Keys are stored in plaintext at `~/.pi/agent/multikey.json`; recommended:
