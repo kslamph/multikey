@@ -144,8 +144,9 @@ export function parseModelsResponse(body: unknown): RemoteModel[] {
  * Verify a key with a minimal chat completion (a few tokens at most). Returns
  * "ok" when auth was accepted (2xx, or 4xx that clearly got past auth like a
  * bad-model/params 400/404), "rejected" on 401/403, "error" on network trouble.
+ * `onLog` receives the server's rejection body so the TUI can show why.
  */
-async function chatProbe(baseUrl: string, style: AuthStyle, key: string, modelId: string): Promise<"ok" | "rejected" | "error"> {
+async function chatProbe(baseUrl: string, style: AuthStyle, key: string, modelId: string, onLog?: (line: string) => void): Promise<"ok" | "rejected" | "error"> {
 	try {
 		const response = await fetch(`${trimSlash(baseUrl)}/chat/completions`, {
 			method: "POST",
@@ -158,7 +159,12 @@ async function chatProbe(baseUrl: string, style: AuthStyle, key: string, modelId
 			body: JSON.stringify({ model: modelId, max_tokens: 4, messages: [{ role: "user", content: "ping" }] }),
 			signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
 		});
-		if (response.status === 401 || response.status === 403) return "rejected";
+		if (response.status === 401 || response.status === 403) {
+			const text = await response.text().catch(() => "");
+			const flat = text.replace(/\s+/g, " ").trim();
+			if (flat) onLog?.(`   ↳ server said: ${flat.slice(0, 160)}`);
+			return "rejected";
+		}
 		return "ok"; // 2xx, or 4xx past auth (bad model / params) — auth itself worked.
 	} catch {
 		return "error";
@@ -226,7 +232,7 @@ export async function probeEndpoint(
 		let verified: AuthStyle | undefined;
 		for (const style of styles) {
 			emit(`auth check: 1-token chat on "${chatModelId}" with ${style === "bearer" ? "Bearer" : "x-api-key"}…`);
-			const verdict = await chatProbe(baseUrl, style, key, chatModelId);
+			const verdict = await chatProbe(baseUrl, style, key, chatModelId, emit);
 			if (verdict === "ok") {
 				verified = style;
 				emit(`   accepted ✓ (style: ${style === "bearer" ? "Authorization: Bearer" : "x-api-key"})`);

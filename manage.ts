@@ -21,8 +21,9 @@ import {
 import type { KeyPool } from "./pool.ts";
 import { PRESETS, findPreset, poolFromPreset, presetFingerprint, diffPresetModels, describePresetDiff, type Preset, type PresetModelDiff } from "./presets.ts";
 import { probeEndpoint, type ProbeResult, type RemoteModel } from "./probe.ts";
-import { describeClineCredential, ensureClineAccessToken, loginClineDeviceFlow } from "./cline-auth.ts";
-import { inputNumber, pickMany, selectOne, showInfo, withProgress } from "./tui.ts";
+import { spawn } from "node:child_process";
+import { describeClineCredential, ensureClineAccessToken, formatClineAccessToken, loginClineDeviceFlow } from "./cline-auth.ts";
+import { inputNumber, pickMany, selectOne, showInfo, showInfoWithHandle, withProgress, type InfoPanelHandle } from "./tui.ts";
 
 type CommandContext = Parameters<Parameters<ExtensionAPI["registerCommand"]>[1]["handler"]>[1];
 
@@ -98,6 +99,25 @@ function formatCooldown(ms: number): string {
 }
 
 /**
+ * Best-effort browser open for device-flow verification URLs. Never throws;
+ * a missing opener only means the user has to paste the URL manually (the
+ * auth panel always shows the URL as a fallback).
+ */
+function tryOpenBrowser(url: string): boolean {
+	const platform = process.platform;
+	const cmd = platform === "darwin" ? "open" : platform === "win32" ? "cmd" : "xdg-open";
+	const args = platform === "win32" ? ["/c", "start", "", url] : [url];
+	try {
+		const child = spawn(cmd, args, { stdio: "ignore", detached: true });
+		child.on("error", () => {}); // opener missing — the panel shows the URL anyway
+		child.unref();
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
  * Collect a Cline account credential: the WorkOS device flow (recommended —
  * refresh tokens keep the access token alive) or a manually pasted access
  * token (works until it expires). Returns one key entry, or undefined on cancel.
@@ -117,40 +137,67 @@ async function collectClineKeys(ctx: CommandContext, hooks: ManagerHooks): Promi
 	]);
 	if (how === "device") {
 		let credential: KeyCredential;
+		let panel: InfoPanelHandle | undefined;
 		try {
-			const tokens = await withProgress(ctx, "Cline sign-in", async (update) =>
-				loginClineDeviceFlow({
-					onAuthInfo: async ({ url, userCode }) => {
-						await showInfo(ctx, "Authorize Cline", [
-							"Open this URL in your browser and approve the sign-in:",
-							"",
-							url,
-							"",
-							`User code: ${userCode}`,
-							"",
-							"Sign-in continues automatically once you approve.",
-						]);
-					},
-					onProgress: (message) => update(message),
-				}),
-			);
+			// withProgress swallows task errors and resolves undefined, so capture
+			// the real error here and rethrow it below — `undefined` tokens used to
+			// crash with "cannot read properties of undefined" and mask the failure.
+			let loginError: unknown;
+			const tokens = await withProgress(ctx, "Cline sign-in", async (update) => {
+				try {
+					return await loginClineDeviceFlow({
+							onAuthInfo: async ({ url, userCode }) => {
+								const opened = tryOpenBrowser(url);
+								panel = showInfoWithHandle(ctx, "Authorize Cline", [
+									opened
+										? "A browser window should have opened — approve the sign-in there."
+										: "Open this URL in your browser and approve the sign-in:",
+									"",
+									...(opened ? ["If no window opened, paste this URL:", url] : [url]),
+									"",
+									`User code: ${userCode}`,
+									"",
+									"Sign-in continues automatically once you approve — you can dismiss this panel any time.",
+								]);
+								await panel.closed;
+							},
+						onAuthorized: () => {
+							update("Browser authorization confirmed — exchanging tokens…");
+							panel?.close();
+						},
+						onProgress: (message) => update(message),
+					});
+				} catch (error) {
+					loginError = error;
+					throw error;
+				}
+			});
+			if (!tokens) throw loginError ?? new Error("Cline sign-in failed");
+			// Store the access token with Cline's required "workos:" prefix (same
+			// convention as the official CLI's providers.json); formatting is
+			// idempotent, so the request path can safely format again.
+			const accessToken = formatClineAccessToken(tokens.accessToken);
 			credential = {
 				kind: "cline-oauth",
 				refreshToken: tokens.refreshToken,
-				accessToken: tokens.accessToken,
+				accessToken,
 				expiresAt: tokens.expiresAt,
 			};
 		} catch (error) {
 			await showInfo(ctx, "Cline sign-in failed", [error instanceof Error ? error.message : String(error)]);
 			return undefined;
+		} finally {
+			panel?.close();
 		}
-		return [{ key: credential.accessToken ?? credential.refreshToken, label: "cline-account", enabled: true, credential }];
+		return [{ key: formatClineAccessToken(credential.accessToken ?? credential.refreshToken), label: "cline-account", enabled: true, credential }];
 	}
 	if (how === "paste") {
 		const raw = await ctx.ui.input("Cline access token", "paste the token");
 		const value = raw?.trim();
 		if (!value) return undefined;
-		return [{ key: value, label: "cline-account", enabled: true }];
+		// Cline's API rejects raw JWTs — the access token must carry the
+		// "workos:" prefix (formatClineAccessToken is idempotent).
+		return [{ key: formatClineAccessToken(value), label: "cline-account", enabled: true }];
 	}
 	return undefined;
 }

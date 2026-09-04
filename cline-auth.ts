@@ -71,6 +71,8 @@ function requireClineTokens(payload: ClineTokenResponse, message: string): Cline
 	if (!payload.success || !accessToken || !refreshToken) {
 		throw new Error(message);
 	}
+	// Return the RAW token; the workos: prefix is applied at request time by
+	// formatClineAccessToken (idempotent), so it is never doubled.
 	return { accessToken, refreshToken, expiresAt: parseExpiresAt(payload.data?.expiresAt) };
 }
 
@@ -97,6 +99,19 @@ export async function refreshClineToken(refreshToken: string): Promise<ClineToke
 	return requireClineTokens(payload, "Invalid Cline token refresh response");
 }
 
+const WORKOS_ACCESS_TOKEN_PREFIX = "workos:";
+
+/**
+ * Cline's API requires the WorkOS access token prefixed with the literal
+ * string "workos:" in the Authorization header — the official client formats
+ * every stored access token this way before sending (formatAccessToken in
+ * cline core). A raw JWT gets a generic 401 that looks like a bad key.
+ */
+export function formatClineAccessToken(accessToken: string): string {
+	const token = accessToken.trim();
+	return token.toLowerCase().startsWith(WORKOS_ACCESS_TOKEN_PREFIX) ? token : `${WORKOS_ACCESS_TOKEN_PREFIX}${token}`;
+}
+
 // Single-flight per refresh token: concurrent subagents hitting the same
 // account must share one in-flight refresh instead of racing each other.
 const inFlight = new Map<string, Promise<ClineTokenUpdate>>();
@@ -111,7 +126,12 @@ export async function ensureClineAccessToken(
 ): Promise<ClineTokenUpdate & { refreshed: boolean }> {
 	const force = options?.force === true;
 	if (!force && !isClineTokenStale(credential) && credential.accessToken) {
-		return { accessToken: credential.accessToken, refreshToken: credential.refreshToken, expiresAt: credential.expiresAt, refreshed: false };
+		return {
+			accessToken: formatClineAccessToken(credential.accessToken),
+			refreshToken: credential.refreshToken,
+			expiresAt: credential.expiresAt,
+			refreshed: false,
+		};
 	}
 	const existing = inFlight.get(credential.refreshToken);
 	if (existing) return { ...(await existing), refreshed: true };
@@ -119,7 +139,8 @@ export async function ensureClineAccessToken(
 		inFlight.delete(credential.refreshToken);
 	});
 	inFlight.set(credential.refreshToken, task);
-	return { ...(await task), refreshed: true };
+	const update = await task;
+	return { ...update, accessToken: formatClineAccessToken(update.accessToken), refreshed: true };
 }
 // ── Device flow (initial sign-in) ───────────────────────────────────────────
 
@@ -146,38 +167,64 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Interactive sign-in: request a device code, hand the verification URL to
- * `onAuthInfo` (awaited, so the UI can show it before polling starts), poll
- * WorkOS until the user approves, then exchange for Cline tokens.
+ * `onAuthInfo`, and start polling immediately — `onAuthInfo` must NOT block
+ * until dismissal (the old code awaited a modal dialog here, so polling only
+ * began after the user pressed enter and a completed browser approval sat
+ * unnoticed). Call `onAuthorized` (via the options below) once the first poll
+ * succeeds so the UI can auto-close the panel; the panel's dismissal promise
+ * is awaited before returning so the two UI layers never interleave.
  */
 export async function loginClineDeviceFlow(options: {
-	/** Awaited once the verification URL/user code are known (e.g. show a dialog). */
+	/** Show the verification URL/user code; resolve without waiting for dismissal. */
 	onAuthInfo: (info: { url: string; userCode: string }) => Promise<void>;
+	/** Called when the browser approval is confirmed — the UI can auto-close its auth panel. */
+	onAuthorized?: () => void;
 	/** Optional progress lines while polling (e.g. append to a progress panel). */
 	onProgress?: (message: string) => void;
 }): Promise<ClineTokenUpdate> {
-	const authResponse = await fetch(`${WORKOS_API_BASE_URL}${WORKOS_DEVICE_AUTHORIZATION_PATH}`, {
-		method: "POST",
-		headers: { "Content-Type": "application/x-www-form-urlencoded" },
-		body: new URLSearchParams({ client_id: WORKOS_CLIENT_ID }),
-		signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-	});
+	// One retry: a transient network blip here aborts the whole sign-in before
+	// the user even sees a URL (observed: "fetch failed" after ~12s once).
+	let authResponse: Response | undefined;
+	let lastFetchError: unknown;
+	for (let attempt = 1; attempt <= 2 && !authResponse; attempt++) {
+		try {
+			authResponse = await fetch(`${WORKOS_API_BASE_URL}${WORKOS_DEVICE_AUTHORIZATION_PATH}`, {
+				method: "POST",
+				headers: { "Content-Type": "application/x-www-form-urlencoded" },
+				body: new URLSearchParams({ client_id: WORKOS_CLIENT_ID }),
+				signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+			});
+		} catch (error) {
+			lastFetchError = error;
+			if (attempt < 2) await sleep(1500);
+		}
+	}
+	if (!authResponse) {
+		const detail = lastFetchError instanceof Error ? `${lastFetchError.message}${lastFetchError.cause instanceof Error ? ` (${lastFetchError.cause.message})` : ""}` : String(lastFetchError);
+		throw new Error(`Cline device authorization failed: could not reach api.workos.com (${detail})`);
+	}
 	const device = (await authResponse.json().catch(() => ({}))) as WorkOSDeviceAuthorizationResponse;
 	if (!authResponse.ok || !device.device_code || !device.user_code || !device.verification_uri) {
 		const detail = device.error_description ?? (authResponse.ok ? "invalid WorkOS response" : `HTTP ${authResponse.status}`);
 		throw new Error(`Cline device authorization failed: ${detail}`);
 	}
 
-	await options.onAuthInfo({
+	// Hand the URL to the UI but do NOT wait for the panel to be dismissed —
+	// polling must start now, or an already-completed browser approval goes
+	// unnoticed until the user dismisses the panel manually.
+	const panelDismissed = options.onAuthInfo({
 		url: device.verification_uri_complete ?? device.verification_uri,
 		userCode: device.user_code,
-	});
+	}).catch(() => {});
 
 	const expiresInSeconds = device.expires_in ?? DEVICE_AUTH_EXPIRES_IN_SECONDS;
 	const deadline = Date.now() + expiresInSeconds * 1000;
 	let intervalSeconds = Math.max(1, device.interval ?? DEVICE_AUTH_INTERVAL_SECONDS);
 	let workosTokens: { access: string; refresh: string } | undefined;
+	let pollCount = 0;
 
 	while (Date.now() <= deadline) {
+		pollCount++;
 		const pollResponse = await fetch(`${WORKOS_API_BASE_URL}${WORKOS_AUTHENTICATE_PATH}`, {
 			method: "POST",
 			headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -194,6 +241,8 @@ export async function loginClineDeviceFlow(options: {
 				throw new Error("Invalid WorkOS token response");
 			}
 			workosTokens = { access: payload.access_token, refresh: payload.refresh_token };
+			options.onAuthorized?.();
+			await panelDismissed;
 			break;
 		}
 		switch (payload.error) {
@@ -206,7 +255,9 @@ export async function loginClineDeviceFlow(options: {
 				await sleep(intervalSeconds * 1000);
 				break;
 			case "access_denied":
+				throw new Error(`Cline authorization failed: ${payload.error_description ?? payload.error}`);
 			case "expired_token":
+				throw new Error(`Cline authorization timed out: ${payload.error_description ?? payload.error}`);
 			case "invalid_grant":
 				throw new Error(`Cline authorization failed: ${payload.error_description ?? payload.error}`);
 			default:

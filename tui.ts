@@ -161,6 +161,69 @@ export async function showInfo(ctx: CommandContext, title: string, lines: string
 	});
 }
 
+export interface InfoPanelHandle {
+	/** Resolves when the panel closes (user enter/esc, or close()). */
+	closed: Promise<void>;
+	/** Close the panel programmatically; no-op if the user already dismissed it. */
+	close(): void;
+}
+
+/**
+ * Non-blocking variant of {@link showInfo}: returns a handle immediately so the
+ * caller can auto-close the panel when something finishes (e.g. an OAuth device
+ * flow detects browser approval) while the user can still dismiss it manually.
+ * Dismissing the panel never cancels whatever is running behind it.
+ */
+export function showInfoWithHandle(ctx: CommandContext, title: string, lines: string[]): InfoPanelHandle {
+	let resolveClosed: (() => void) | undefined;
+	const closed = new Promise<void>((resolve) => {
+		resolveClosed = resolve;
+	});
+	let doneFn: (() => void) | undefined;
+	let settled = false;
+	const finish = () => {
+		if (settled) return;
+		settled = true;
+		try {
+			doneFn?.();
+		} catch {
+			// Panel may already be gone; the closed promise is what matters.
+		}
+		resolveClosed?.();
+	};
+
+	void ctx.ui.custom<void>((tui, theme, _kb, done) => {
+		doneFn = done;
+		let cachedLines: string[] | undefined;
+		return {
+			render(width: number) {
+				if (cachedLines) return cachedLines;
+				const w = Math.max(10, width);
+				const out: string[] = [];
+				const add = (line = "") => out.push(truncateToWidth(line, w));
+				const border = theme.fg("accent", "─".repeat(w));
+				add(border);
+				add(` ${theme.fg("accent", theme.bold(title))}`);
+				add();
+				for (const line of lines) add(` ${line}`);
+				add();
+				add(theme.fg("dim", " esc/enter dismiss (keeps running)"));
+				add(border);
+				cachedLines = out;
+				return out;
+			},
+			invalidate() {
+				cachedLines = undefined;
+			},
+			handleInput(data: string) {
+				if (matchesKey(data, Key.escape) || matchesKey(data, Key.enter)) finish();
+			},
+		};
+	});
+
+	return { closed, close: finish };
+}
+
 /** Simple toggle list (multi-select), returns selected values or null on cancel. */
 export async function pickMany(
 	ctx: CommandContext,
