@@ -11,7 +11,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import type { AuthStyle } from "./probe.ts";
-import { currentDeviceId, currentSessionId, currentTaskId, setDeviceId } from "./identity.ts";
+import { currentRequestId, currentSessionId, currentTaskId, turnKeyOf } from "./identity.ts";
 
 /** Safe model defaults applied when a spec doesn't say otherwise (edit in multikey.json). */
 export const DEFAULT_CONTEXT_WINDOW = 128_000;
@@ -109,12 +109,6 @@ export interface PoolConfig {
 
 export interface KeypoolConfig {
 	pools: PoolConfig[];
-	/**
-	 * Stable per-install UUID sent as `x-opencode-request` to OpenCode Zen.
-	 * Generated once and reused forever, so every request from this machine
-	 * carries the same device identity.
-	 */
-	deviceId?: string;
 }
 
 export function configPath(): string {
@@ -300,25 +294,7 @@ export function loadConfig(): { config: KeypoolConfig; created: boolean; migrate
 	}
 	const raw = JSON.parse(readFileSync(path, "utf-8")) as KeypoolConfig;
 	const config = normalize(raw);
-	// Adopt any stored device id into the identity module; a config predating
-	// deviceId gets one assigned by ensureDeviceId() in the caller.
-	if (config.deviceId) setDeviceId(config.deviceId);
 	return { config, created: false };
-}
-
-/**
- * Make sure a persisted device id exists for configs that expose an OpenCode
- * Zen pool, saving only when it actually changed anything. Pools that never
- * talk to Zen leave the file untouched.
- */
-export function ensureDeviceId(config: KeypoolConfig): void {
-	if (config.deviceId) {
-		setDeviceId(config.deviceId);
-		return;
-	}
-	if (!config.pools.some((pool) => isOpenCodeZenEndpoint(pool.baseUrl))) return;
-	config.deviceId = currentDeviceId();
-	saveConfig(config);
 }
 
 export function saveConfig(config: KeypoolConfig): void {
@@ -335,8 +311,7 @@ export function normalize(config: KeypoolConfig): KeypoolConfig {
 		if (!pool.baseUrl || typeof pool.baseUrl !== "string") continue;
 		normalized.push(normalizePool(pool));
 	}
-	const deviceId = typeof config.deviceId === "string" && config.deviceId.trim() ? config.deviceId.trim() : undefined;
-	return { pools: normalized, deviceId };
+	return { pools: normalized };
 }
 
 /** Structural check so a malformed credential in the JSON file can't break a pool. */
@@ -448,15 +423,20 @@ export function endpointHeaders(baseUrl: string): Record<string, string> {
 /**
  * Per-request identity headers a known endpoint expects.
  *
- * OpenCode Zen reads `x-opencode-session` for per-conversation routing and
- * `x-opencode-request` as the caller's device id, so these must be generated
- * at request time rather than baked into the provider registration.
+ * OpenCode Zen reads `x-opencode-session` as the conversation id and
+ * `x-opencode-request` as the id of the user message being answered, so these
+ * must be computed at request time rather than baked into the provider
+ * registration. `messages` lets the caller key the request id to the current
+ * turn (see turnKeyOf); omit it for one-shot calls outside a conversation.
  * Cline reads `X-Task-ID` as a per-conversation correlation id.
  */
-export function endpointIdentityHeaders(baseUrl: string | undefined): Record<string, string> {
+export function endpointIdentityHeaders(baseUrl: string | undefined, messages?: readonly unknown[]): Record<string, string> {
 	if (isClineEndpoint(baseUrl ?? "")) return { "X-Task-ID": currentTaskId() };
 	if (!isOpenCodeZenEndpoint(baseUrl ?? "")) return {};
-	return { "x-opencode-session": currentSessionId(), "x-opencode-request": currentDeviceId() };
+	return {
+		"x-opencode-session": currentSessionId(),
+		"x-opencode-request": currentRequestId(messages ? turnKeyOf(messages) : undefined),
+	};
 }
 
 // ── Cline (api.cline.bot) ────────────────────────────────────────────────────

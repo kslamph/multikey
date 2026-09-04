@@ -103,16 +103,18 @@ export function createRotatingStreamSimple(pool: KeyPool, apiName: string, notif
 
 				try {
 					const captured: CapturedResponse = { status: 0 };
-					// Identity headers (session / device) are per-request, so they are merged
-					// here rather than baked into the provider registration. Providers apply
-					// options.headers last, so these win over the static pool headers.
+					// Identity headers (session / request) are per-request, so they are
+					// merged here rather than baked into the provider registration.
+					// Providers apply options.headers last, so these win over the static
+					// pool headers. The message list keys the request id to the current
+					// turn, so retries of one turn share it like opencode's lastUser does.
 					const identityBaseUrl = model.baseUrl || pool.config.baseUrl;
 					const attemptOptions: SimpleStreamOptions = {
 						...options,
 						apiKey,
 						headers: {
 							...options?.headers,
-							...endpointIdentityHeaders(identityBaseUrl),
+							...endpointIdentityHeaders(identityBaseUrl, context.messages),
 							...(authStyle === "api-key" ? { "x-api-key": apiKey } : {}),
 						},
 						onResponse: (response) => {

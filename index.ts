@@ -11,8 +11,8 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getApiProvider, type Api } from "@earendil-works/pi-ai";
-import { configPath, endpointHeaders, ensureDeviceId, loadConfig, saveConfig, toProviderModels, type KeypoolConfig, type PoolConfig } from "./config.ts";
-import { resetSessionId, resetTaskId } from "./identity.ts";
+import { configPath, endpointHeaders, loadConfig, saveConfig, toProviderModels, type KeypoolConfig, type PoolConfig } from "./config.ts";
+import { resetConversation } from "./identity.ts";
 import { KeyPool } from "./pool.ts";
 import { createRotatingStreamSimple } from "./stream.ts";
 import { runManager, maybeOfferPresetUpdates, type ManagerHooks } from "./manage.ts";
@@ -36,8 +36,6 @@ export default function multikey(pi: ExtensionAPI) {
 
 	const pools = new Map<string, KeyPool>();
 	for (const pool of config.pools) pools.set(pool.id, new KeyPool(pool));
-	// OpenCode Zen needs a stable per-device id; persist one when a Zen pool exists.
-	ensureDeviceId(config);
 
 	let ui: ExtensionContext["ui"] | undefined;
 	const notify = (message: string) => {
@@ -65,9 +63,6 @@ export default function multikey(pi: ExtensionAPI) {
 		const keyPool = pools.get(pool.id) ?? new KeyPool(pool);
 		keyPool.updateConfig(pool);
 		pools.set(pool.id, keyPool);
-		// A Zen pool needs a durable device identity; adopt one before the first
-		// request goes out (no-op once multikey.json has a deviceId).
-		ensureDeviceId(config);
 
 		pi.registerProvider(pool.id, {
 			name: pool.name ?? pool.id,
@@ -139,13 +134,10 @@ export default function multikey(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (event, ctx) => {
 		ui = ctx.ui;
-	// One OpenCode session id / Cline task id per conversation: /new, resume and
-	// fork switch to a different conversation, so drop the cached ids for those.
-	if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
-		resetSessionId();
-		resetTaskId();
-	}
-		ensureDeviceId(config);
+		// One OpenCode session id / request id and one Cline task id per
+		// conversation: /new, resume and fork switch conversations, so drop the
+		// cached ids for those (but not on plain startup or an extension reload).
+		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") resetConversation();
 		for (const { id, reason } of skipped) {
 			notify(`multikey: provider "${id}" not available — ${reason}. Fix it via /multikey → Manage pools.`);
 		}

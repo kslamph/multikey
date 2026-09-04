@@ -44,79 +44,6 @@ Built-in presets decouple "model settings" from "keys". The data comes from b.ai
 
 > Why `null` must be explicit: pi's `getSupportedThinkingLevels` treats `mapped === null` as unsupported and hides that level, but **omitting** it is treated as supported and the level name is sent to the API verbatim; `xhigh` / `max` additionally require an explicit non-null value to be usable.
 
-### OpenCode Zen (free tier)
-
-Endpoint `https://opencode.ai/zen/v1`; keys from [opencode.ai/auth](https://opencode.ai/auth) → workspace Keys. Context / max-output are the **Zen free-tier serving limits** (opencode.ai/docs/zen); the raw models are bigger — MiMo V2.5 = 1M ctx. `muse-spark-1.3-contributor-free` uses the OpenAI **Responses** API endpoint; the other five use chat completions.
-
-Requests to this endpoint impersonate the official OpenCode client, on both probes and live requests, whenever a pool's baseUrl is `https://opencode.ai/zen/v1`:
-
-| Header | Value | Lifetime |
-|---|---|---|
-| `x-opencode-client` | `tui` | constant |
-| `User-Agent` | `opencode/0.1.50 ai-sdk/openai-compatible/3.0.41` | constant |
-| `x-opencode-session` | `ses_` + 12 hex + 14 base62 | one per pi conversation; regenerated on `/new`, resume and fork |
-| `x-opencode-request` | v4 UUID | one per machine, persisted as `deviceId` in `multikey.json` |
-
-The session id reproduces OpenCode's own `Identifier.create()`: the first 12 hex chars encode `timestamp_ms * 0x1000 + counter` bitwise-NOTed (descending), so newer conversations sort first, and the counter resets whenever the millisecond changes.
-
-| Model | ctx / max-out | Modalities | Supported thinking levels |
-|---|---|---|---|
-| big-pickle | 200K / 32K | text | always-on (no thinkingLevelMap, like pi's catalog) |
-| mimo-v2.5-free | 200K / 32K | text+image | always-on (no thinkingLevelMap) |
-| ling-3.0-flash-fin-free | 262K / 32K | text | always-on (no thinkingLevelMap) |
-| nemotron-3-ultra-free | 1M / 128K | text | always-on (no thinkingLevelMap) |
-| nemotron-3.5-lightning-free | 262K / 262K | text | always-on (no thinkingLevelMap) |
-| muse-spark-1.3-contributor-free | 1M / 131K | text+image | always-on (no reasoning_options; Responses API) |
-
-> All six models are free (zero per-token cost) for a limited time while OpenCode collects feedback; data may be used to improve the models (Nemotron free endpoints are NVIDIA trials; Muse Spark Contributor models grant Meta training permission — don't send confidential data).
->
-> Removed from the preset over time as the free list changed: `deepseek-v4-flash-free` (now **paid** on Zen), `hy3-free` (no longer offered free), and `muse-spark-1.2-contributor-free` (legacy 1.3 predecessor).
-
-### Cline Free (free tier)
-
-Endpoint `https://api.cline.bot/api/v1` (OpenAI-compatible chat completions). Cline periodically offers free models on its usage-billing API — no static API key exists; access is tied to a **Cline account** via OAuth. The preset therefore collects a credential instead of keys:
-
-- **Sign in with Cline (device flow)** — a WorkOS device code is shown; approve it in the browser at the given URL. The refresh token is stored in `multikey.json` and access tokens are minted/rotated automatically before each request and again on 401. This is the recommended path: pasted tokens rot, device-flow tokens don't.
-- **Paste a Cline access token** — from `~/.cline/data/secrets.json` (or the Cline CLI's storage). Works until the token expires, then must be replaced manually.
-
-Requests to this endpoint send the same client-identity headers the official Cline CLI sends, on probes and live requests alike:
-
-| Header | Value |
-|---|---|
-| `HTTP-Referer` / `X-Title` | `https://cline.bot` / `Cline` |
-| `X-CLIENT-TYPE` / `X-CLIENT-VERSION` | `cline-cli` / CLI version |
-| `User-Agent` | `Cline/<version>` |
-| `X-PLATFORM` / `X-PLATFORM-VERSION` | `cli` / CLI version |
-| `X-CORE-VERSION` | SDK core version |
-| `X-IS-MULTIROOT` | `false` |
-| `X-Task-ID` | v4 UUID, one per pi conversation (regenerated on `/new`, resume, fork) |
-
-Quota semantics differ from every other pool: Cline enforces a **daily, per-account, per-model** limit answered with `429 "Daily free limit reached on model X. Try again in 23h 59m"`. multikey classifies this as its own outcome — the key cools down until the server-reported reset time (shown as `cooldown 24h (daily limit)` in the status view) instead of the 20s 429 rotation, which would be meaningless here.
-
-| Model | ctx / max-out | Notes |
-|---|---|---|
-| deepseek/deepseek-v4-flash | 1M / 131K | thinking levels not yet probed |
-| meituan/longcat-2.0 | 1M / 131K | thinking levels not yet probed |
-| poolside/laguna-s-2.1:free | 128K / 16K | limits unpublished; safe defaults |
-| z-ai/glm-5.2:free | 200K / 131K | thinking levels not yet probed |
-
-> The free lineup **rotates**: retired ids answer `"model not found"`. New models appear via `GET /models` (public) — or accept the one-time preset-sync prompt when this preset ships an updated list. Context/output numbers are best-effort (server-enforced); tune them per model in `multikey.json`.
->
-> **Single-account by design.** A Cline account is meant to be used from the official IDE extension / CLI, not third-party API clients, and multi-account rotation to dodge the daily quota would violate Cline's terms. The integration exists to use *your own* account's free quota from pi; the client headers identify requests as coming from a Cline-style client. Use it accordingly.
-
-To add a preset: append one entry to the `PRESETS` array in `presets.ts`.
-
-### Preset sync
-
-Pools created from a preset are tracked: `poolFromPreset` stamps a `_preset` marker (preset id + a fingerprint of the model list) into `multikey.json`.
-
-- When a shipped preset changes (models added/removed, spec tweaks), pi asks **once** at session start: "Built-in presets changed for pool(s) … — review and align now?"
-- **Align** replaces the pool's model list with the preset's; keys, endpoint, and settings are kept. **Keep my models** — or Esc, or even a crash mid-prompt — mutes that version: the offered fingerprint is persisted *before* the dialog shows, so the same version never re-prompts.
-- When the preset changes **again** (new fingerprint), you're asked once more. Each version gets exactly one ask.
-- Hand-tuned models never trigger the automatic prompt (the preset hasn't changed since your last sync); they stay reachable via `/multikey → Check preset updates…`, which is always available regardless of muting.
-- Legacy pools (created before tracking existed) are matched by `baseUrl` and adopted into tracking the same way.
-- The fingerprint covers the preset's **models only** — compat/API/description changes don't trigger prompts.
-
 ## Configuration
 
 `~/.pi/agent/multikey.json`. On first run it auto-discovers mergeable pools from `~/.pi/agent/models.json` (≥2 providers sharing a baseUrl = you copying the provider per key), and also picks up providers pointing at `api.b.ai`; if nothing is found it generates an empty config.
@@ -177,22 +104,6 @@ The detected header style is stored as `"auth": "api-key"` only when the endpoin
 ```
 
 Changes take effect immediately (the provider is re-registered) — no restart needed.
-
-## Pointing subagents at the pool
-
-Set `agentOverrides` in `settings.json` to the pool provider:
-
-```json
-"subagents": {
-  "agentOverrides": {
-    "oracle":   { "model": "bai/glm-5.3-flash" },
-    "scout":    { "model": "bai/hy3" },
-    "worker":   { "model": "bai/mimo-v2.5" }
-  }
-}
-```
-
-`defaultProvider: "bai"` works the same way.
 
 ## How it works
 
