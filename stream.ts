@@ -1,7 +1,10 @@
 /**
  * Rotating streamSimple: wraps the underlying pi-ai API implementation, picks a
  * key from the pool for every request, and transparently retries on 429/401/403
- * with the next key (marking a cooldown on the failed key).
+ * with the next key (marking a cooldown on the failed key). OAuth-backed keys
+ * (Cline accounts) refresh their access token pre-request and on 401, and a
+ * Cline daily-quota 429 cools the key down until the server-reported reset
+ * time instead of triggering normal rotation.
  *
  * Events are only relayed to the caller once the attempt is known to be healthy,
  * so a rotated attempt never produces duplicate/partial output.
@@ -19,9 +22,29 @@ import {
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import type { KeyOutcome, KeyPool, Lease } from "./pool.ts";
+import { endpointIdentityHeaders } from "./config.ts";
+import { ensureClineAccessToken } from "./cline-auth.ts";
 
 const RATE_LIMIT_RE = /\b429\b|rate\s*limit|too many requests|quota\s*(exceed|limit)|requests per minute|requests per day/i;
 const INVALID_KEY_RE = /\b40[13]\b|unauthorized|forbidden|invalid\s*(api\s*)?key|incorrect\s*(api\s*)?key|authentication/i;
+/**
+ * Cline free models enforce a daily per-account quota and answer with
+ * `"Daily free limit reached on model X. Try again in 23h 59m"`. This is NOT
+ * a rotation-worthy 429 — the cooldown is the server-reported reset time.
+ */
+const CLINE_QUOTA_RE = /free limit reached on model/i;
+const CLINE_RESET_RE = /try again in\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?/i;
+
+/** Parse the "Try again in Xh Ym Zs" countdown from a Cline quota 429 body. */
+export function parseClineQuotaResetMs(message: string): number | undefined {
+	const match = CLINE_RESET_RE.exec(message.toLowerCase());
+	if (!match) return undefined;
+	const hours = Number(match[1] ?? 0);
+	const minutes = Number(match[2] ?? 0);
+	const seconds = Number(match[3] ?? 0);
+	const ms = hours * 3_600_000 + minutes * 60_000 + seconds * 1000;
+	return ms > 0 ? ms : undefined;
+}
 
 interface CapturedResponse {
 	status: number;
@@ -30,7 +53,7 @@ interface CapturedResponse {
 
 export type Notifier = (message: string) => void;
 
-export function createRotatingStreamSimple(pool: KeyPool, apiName: string, notify: Notifier) {
+export function createRotatingStreamSimple(pool: KeyPool, apiName: string, notify: Notifier, onConfigDirty?: () => void) {
 	const impl = getApiProvider(apiName as Api);
 	if (!impl) throw new Error(`multikey: no API provider registered for api: ${apiName}`);
 	// Auth style: "api-key" providers want the key in x-api-key (some reject
@@ -50,19 +73,48 @@ export function createRotatingStreamSimple(pool: KeyPool, apiName: string, notif
 
 			for (let attempt = 0; attempt < maxAttempts; attempt++) {
 				let lease: Lease;
+				// One forced-token-refresh retry per acquired lease (401 → refresh → retry).
+				let refreshedForLease = false;
 				try {
 					lease = await pool.acquire(options?.signal);
 				} catch {
 					emitAborted(out, model);
 					return;
 				}
+				// OAuth-backed keys (Cline accounts) don't carry a static key: mint a
+				// fresh access token from the stored refresh token before every request.
+				let apiKey = lease.key;
+				if (lease.credential?.kind === "cline-oauth") {
+					try {
+						const fresh = await ensureClineAccessToken(lease.credential);
+						if (fresh.refreshed) {
+							pool.applyClineCredential(lease, fresh);
+							onConfigDirty?.();
+						}
+						apiKey = fresh.accessToken;
+					} catch (error) {
+						// The stale token may still work; if not, the 401 path below
+						// force-refreshes once before giving up on this key.
+						notify(
+							`multikey[${pool.config.id}]: token refresh failed on ${lease.label} (${error instanceof Error ? error.message : String(error)}) — trying stored token`,
+						);
+					}
+				}
 
 				try {
 					const captured: CapturedResponse = { status: 0 };
+					// Identity headers (session / device) are per-request, so they are merged
+					// here rather than baked into the provider registration. Providers apply
+					// options.headers last, so these win over the static pool headers.
+					const identityBaseUrl = model.baseUrl || pool.config.baseUrl;
 					const attemptOptions: SimpleStreamOptions = {
 						...options,
-						apiKey: lease.key,
-						headers: authStyle === "api-key" ? { ...options?.headers, "x-api-key": lease.key } : options?.headers,
+						apiKey,
+						headers: {
+							...options?.headers,
+							...endpointIdentityHeaders(identityBaseUrl),
+							...(authStyle === "api-key" ? { "x-api-key": apiKey } : {}),
+						},
 						onResponse: (response) => {
 							captured.status = response.status;
 							const ra = response.headers?.["retry-after"];
@@ -82,10 +134,31 @@ export function createRotatingStreamSimple(pool: KeyPool, apiName: string, notif
 					// Attempt failed. Only rotate when nothing was relayed yet; if content
 					// already streamed, the failure is surfaced as-is (mid-stream 429 is rare).
 					if (verdict.kind === "rotate" && !verdict.relayedAny) {
+						// 401 on an OAuth key usually means an expired access token: force a
+						// refresh and retry the same account once, without burning a rotation.
+						if (
+							verdict.outcome === "invalid" &&
+							lease.credential?.kind === "cline-oauth" &&
+							!refreshedForLease
+						) {
+							refreshedForLease = true;
+							try {
+								const fresh = await ensureClineAccessToken(lease.credential, { force: true });
+								pool.applyClineCredential(lease, fresh);
+								onConfigDirty?.();
+								notify(`multikey[${pool.config.id}]: 401 on ${lease.label} — Cline token refreshed, retrying`);
+								attempt--; // retry the same key; the request never got going
+								continue;
+							} catch (error) {
+								notify(
+									`multikey[${pool.config.id}]: Cline token refresh failed on ${lease.label} (${error instanceof Error ? error.message : String(error)})`,
+								);
+							}
+						}
 						lastProblem = verdict.problem;
-						pool.report(lease, verdict.outcome, verdict.outcome === "rate_limited" ? verdict.cooldownMs : undefined);
+						pool.report(lease, verdict.outcome, verdict.cooldownMs);
 						notify(
-							`multikey[${pool.config.id}]: ${verdict.outcome === "rate_limited" ? "429" : "auth error"} on ${lease.label} (${pool.mask(lease.key)}), rotating to another key`,
+							`multikey[${pool.config.id}]: ${describeOutcome(verdict.outcome)} on ${lease.label} (${pool.mask(lease.key)}), rotating to another key`,
 						);
 						continue;
 					}
@@ -198,11 +271,30 @@ function classify(
 	message: string,
 	captured: CapturedResponse,
 ): { outcome: KeyOutcome; cooldownMs?: number } | undefined {
+	// Quota marker wins over the generic 429/status rules: the reset countdown
+	// in the body is the real cooldown, not the retry-after header.
+	if (CLINE_QUOTA_RE.test(message)) {
+		return { outcome: "quota_exhausted", cooldownMs: parseClineQuotaResetMs(message) };
+	}
 	const fromStatus = classifyStatus(captured);
 	if (fromStatus) return fromStatus;
 	if (RATE_LIMIT_RE.test(message)) return { outcome: "rate_limited" };
 	if (INVALID_KEY_RE.test(message)) return { outcome: "invalid" };
 	return undefined;
+}
+
+/** Short human label for a rotation notify line. */
+function describeOutcome(outcome: KeyOutcome): string {
+	switch (outcome) {
+		case "rate_limited":
+			return "429";
+		case "quota_exhausted":
+			return "daily free limit reached";
+		case "invalid":
+			return "auth error";
+		default:
+			return "error";
+	}
 }
 
 function baseMessage(model: Model<Api>, stopReason: "error" | "aborted", errorMessage?: string): AssistantMessage {

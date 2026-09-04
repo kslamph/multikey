@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import type { AuthStyle } from "./probe.ts";
+import { currentDeviceId, currentSessionId, currentTaskId, setDeviceId } from "./identity.ts";
 
 /** Safe model defaults applied when a spec doesn't say otherwise (edit in multikey.json). */
 export const DEFAULT_CONTEXT_WINDOW = 128_000;
@@ -37,6 +38,36 @@ export interface PoolKeyConfig {
 	label?: string;
 	/** Disabled keys are never selected. Default: true. */
 	enabled?: boolean;
+	/**
+	 * Credential-backed key (Cline account OAuth). When present, `key` holds the
+	 * current access token and is refreshed transparently from `credential`
+	 * before requests and again on 401 — see cline-auth.ts.
+	 */
+	credential?: KeyCredential;
+}
+
+/** OAuth-style credential for endpoints without static API keys (Cline free tier). */
+export interface KeyCredential {
+	kind: "cline-oauth";
+	/** Long-lived refresh token; access tokens are minted from it. */
+	refreshToken: string;
+	/** Last known access token (mirrors `key`). */
+	accessToken?: string;
+	/** Access token expiry (epoch ms), when known. */
+	expiresAt?: number;
+}
+
+/**
+ * Tracks which shipped preset a pool was created from / last aligned with.
+ * Lives in multikey.json as `_preset`. The fingerprint (see presetFingerprint
+ * in presets.ts) is persisted the moment an update prompt is shown — that is
+ * what guarantees each preset version is asked about at most once.
+ */
+export interface PresetMarker {
+	/** Preset id in presets.ts, e.g. "b-ai". */
+	id: string;
+	/** Fingerprint of the preset's model list at pool creation / last sync. */
+	fingerprint: string;
 }
 
 export interface PoolModelConfig {
@@ -70,12 +101,20 @@ export interface PoolConfig {
 	cooldownMs?: number;
 	/** Cooldown after a 401/403 (bad key). Default 600000ms. */
 	invalidKeyCooldownMs?: number;
+	/** Present when the pool was created from (or adopted) a shipped preset. */
+	_preset?: PresetMarker;
 	keys: PoolKeyConfig[];
 	models: PoolModelConfig[];
 }
 
 export interface KeypoolConfig {
 	pools: PoolConfig[];
+	/**
+	 * Stable per-install UUID sent as `x-opencode-request` to OpenCode Zen.
+	 * Generated once and reused forever, so every request from this machine
+	 * carries the same device identity.
+	 */
+	deviceId?: string;
 }
 
 export function configPath(): string {
@@ -260,7 +299,26 @@ export function loadConfig(): { config: KeypoolConfig; created: boolean; migrate
 		return { config, created: true };
 	}
 	const raw = JSON.parse(readFileSync(path, "utf-8")) as KeypoolConfig;
-	return { config: normalize(raw), created: false };
+	const config = normalize(raw);
+	// Adopt any stored device id into the identity module; a config predating
+	// deviceId gets one assigned by ensureDeviceId() in the caller.
+	if (config.deviceId) setDeviceId(config.deviceId);
+	return { config, created: false };
+}
+
+/**
+ * Make sure a persisted device id exists for configs that expose an OpenCode
+ * Zen pool, saving only when it actually changed anything. Pools that never
+ * talk to Zen leave the file untouched.
+ */
+export function ensureDeviceId(config: KeypoolConfig): void {
+	if (config.deviceId) {
+		setDeviceId(config.deviceId);
+		return;
+	}
+	if (!config.pools.some((pool) => isOpenCodeZenEndpoint(pool.baseUrl))) return;
+	config.deviceId = currentDeviceId();
+	saveConfig(config);
 }
 
 export function saveConfig(config: KeypoolConfig): void {
@@ -277,7 +335,19 @@ export function normalize(config: KeypoolConfig): KeypoolConfig {
 		if (!pool.baseUrl || typeof pool.baseUrl !== "string") continue;
 		normalized.push(normalizePool(pool));
 	}
-	return { pools: normalized };
+	const deviceId = typeof config.deviceId === "string" && config.deviceId.trim() ? config.deviceId.trim() : undefined;
+	return { pools: normalized, deviceId };
+}
+
+/** Structural check so a malformed credential in the JSON file can't break a pool. */
+function isValidCredential(credential: unknown): credential is KeyCredential {
+	return (
+		!!credential &&
+		typeof credential === "object" &&
+		(credential as KeyCredential).kind === "cline-oauth" &&
+		typeof (credential as KeyCredential).refreshToken === "string" &&
+		(credential as KeyCredential).refreshToken.trim().length > 0
+	);
 }
 
 function normalizePool(pool: PoolConfig): PoolConfig {
@@ -287,8 +357,14 @@ function normalizePool(pool: PoolConfig): PoolConfig {
 			key: k.key.trim(),
 			label: typeof k.label === "string" && k.label.trim() ? k.label.trim() : undefined,
 			enabled: k.enabled !== false,
+			// OAuth-backed keys keep their credential; only well-formed ones survive.
+			...(isValidCredential(k.credential) ? { credential: k.credential } : {}),
 		}));
 	const models = (Array.isArray(pool.models) ? pool.models : []).filter((m) => m && typeof m.id === "string" && m.id.trim());
+	const preset =
+		pool._preset && typeof pool._preset.id === "string" && typeof pool._preset.fingerprint === "string"
+			? { id: pool._preset.id, fingerprint: pool._preset.fingerprint }
+			: undefined;
 	return {
 		id: pool.id.trim(),
 		name: pool.name ?? pool.id,
@@ -302,6 +378,7 @@ function normalizePool(pool: PoolConfig): PoolConfig {
 			typeof pool.invalidKeyCooldownMs === "number" && pool.invalidKeyCooldownMs >= 0
 				? pool.invalidKeyCooldownMs
 				: DEFAULT_INVALID_KEY_COOLDOWN_MS,
+		_preset: preset,
 		keys,
 		models,
 	};
@@ -342,21 +419,73 @@ export function maskKey(key: string): string {
 
 // ── Endpoint-required headers ────────────────────────────────────────────────
 
-/** OpenCode Zen free tier endpoint that requires a specific User-Agent header. */
+/** OpenCode Zen free tier endpoint that mimics the official OpenCode client. */
 const OPENCODE_ZEN_BASE_URL = "https://opencode.ai/zen/v1";
-const OPENCODE_ZEN_USER_AGENT =
-	"opencode/1.15.0 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13";
+const OPENCODE_ZEN_USER_AGENT = "opencode/0.1.50 ai-sdk/openai-compatible/3.0.41";
+const OPENCODE_ZEN_CLIENT = "tui";
+
+/** True when a baseUrl points at OpenCode Zen (case-insensitive, trailing slash ok). */
+export function isOpenCodeZenEndpoint(baseUrl: string | undefined): boolean {
+	if (!baseUrl) return false;
+	return baseUrl.replace(/\/+$/, "").toLowerCase() === OPENCODE_ZEN_BASE_URL;
+}
 
 /**
- * Headers that must be sent to known endpoints.
+ * Constant headers a known endpoint expects on every request.
  *
- * Currently: OpenCode Zen's free tier endpoint requires this exact User-Agent;
- * anything else returns an empty object.
- *
- * The comparison is case-insensitive and tolerates a trailing slash.
+ * OpenCode Zen's free tier wants the full OpenCode client header set; the
+ * per-conversation / per-device halves live in {@link endpointIdentityHeaders}.
+ * Cline's API gates on its official client's header set (versioned client
+ * identity + platform metadata), so we send the same shape the Cline CLI
+ * sends (mirroring sdk request-headers.ts). Anything else returns an empty object.
  */
 export function endpointHeaders(baseUrl: string): Record<string, string> {
-	const normalized = baseUrl.replace(/\/+$/, "").toLowerCase();
-	if (normalized === OPENCODE_ZEN_BASE_URL) return { "User-Agent": OPENCODE_ZEN_USER_AGENT };
-	return {};
+	if (isClineEndpoint(baseUrl)) return clineClientHeaders();
+	if (!isOpenCodeZenEndpoint(baseUrl)) return {};
+	return { "x-opencode-client": OPENCODE_ZEN_CLIENT, "User-Agent": OPENCODE_ZEN_USER_AGENT };
+}
+
+/**
+ * Per-request identity headers a known endpoint expects.
+ *
+ * OpenCode Zen reads `x-opencode-session` for per-conversation routing and
+ * `x-opencode-request` as the caller's device id, so these must be generated
+ * at request time rather than baked into the provider registration.
+ * Cline reads `X-Task-ID` as a per-conversation correlation id.
+ */
+export function endpointIdentityHeaders(baseUrl: string | undefined): Record<string, string> {
+	if (isClineEndpoint(baseUrl ?? "")) return { "X-Task-ID": currentTaskId() };
+	if (!isOpenCodeZenEndpoint(baseUrl ?? "")) return {};
+	return { "x-opencode-session": currentSessionId(), "x-opencode-request": currentDeviceId() };
+}
+
+// ── Cline (api.cline.bot) ────────────────────────────────────────────────────
+
+const CLINE_API_BASE_URL = "https://api.cline.bot";
+
+/**
+ * Header set the official Cline CLI sends to api.cline.bot (mirrors
+ * cline sdk request-headers.ts buildClineRequestHeaders with source "cli").
+ * The values track the cline repo versions: CLI 3.0.61, SDK core 0.0.82.
+ */
+const CLINE_CLIENT_HEADERS: Record<string, string> = {
+	"HTTP-Referer": "https://cline.bot",
+	"X-Title": "Cline",
+	"X-IS-MULTIROOT": "false",
+	"X-CLIENT-TYPE": "cline-cli",
+	"User-Agent": "Cline/3.0.61",
+	"X-CLIENT-VERSION": "3.0.61",
+	"X-PLATFORM": "cli",
+	"X-PLATFORM-VERSION": "3.0.61",
+	"X-CORE-VERSION": "0.0.82",
+};
+
+function clineClientHeaders(): Record<string, string> {
+	return { ...CLINE_CLIENT_HEADERS };
+}
+
+/** True when a baseUrl points at Cline's API (any path depth, trailing slash ok). */
+export function isClineEndpoint(baseUrl: string | undefined): boolean {
+	if (!baseUrl) return false;
+	return baseUrl.replace(/\/+$/, "").toLowerCase().startsWith(CLINE_API_BASE_URL);
 }

@@ -1,4 +1,4 @@
-import { endpointHeaders } from "./config.ts";
+import { endpointHeaders, endpointIdentityHeaders } from "./config.ts";
 
 /**
  * Endpoint probing: auto-detect the auth header style and fetch the model list.
@@ -63,7 +63,7 @@ async function fetchJson(url: string, headers: Record<string, string>, timeoutMs
 	try {
 		const response = await fetch(url, {
 			method: "GET",
-			headers: { Accept: "application/json", ...endpointHeaders(baseUrl ?? url), ...headers },
+			headers: { Accept: "application/json", ...endpointHeaders(baseUrl ?? url), ...endpointIdentityHeaders(baseUrl ?? url), ...headers },
 			signal: AbortSignal.timeout(timeoutMs),
 		});
 		let body: unknown;
@@ -149,7 +149,12 @@ async function chatProbe(baseUrl: string, style: AuthStyle, key: string, modelId
 	try {
 		const response = await fetch(`${trimSlash(baseUrl)}/chat/completions`, {
 			method: "POST",
-			headers: { "Content-Type": "application/json", ...endpointHeaders(baseUrl), ...authHeaders(style, key) },
+			headers: {
+				"Content-Type": "application/json",
+				...endpointHeaders(baseUrl),
+				...endpointIdentityHeaders(baseUrl),
+				...authHeaders(style, key),
+			},
 			body: JSON.stringify({ model: modelId, max_tokens: 4, messages: [{ role: "user", content: "ping" }] }),
 			signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
 		});

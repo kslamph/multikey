@@ -9,16 +9,19 @@ import {
 	DEFAULT_CONTEXT_WINDOW,
 	DEFAULT_INPUT,
 	DEFAULT_MAX_TOKENS,
+	isClineEndpoint,
 	KNOWN_API_TYPES,
 	maskKey,
 	type KeypoolConfig,
+	type KeyCredential,
 	type PoolConfig,
 	type PoolKeyConfig,
 	type PoolModelConfig,
 } from "./config.ts";
 import type { KeyPool } from "./pool.ts";
-import { PRESETS, findPreset, poolFromPreset, type Preset } from "./presets.ts";
+import { PRESETS, findPreset, poolFromPreset, presetFingerprint, diffPresetModels, describePresetDiff, type Preset, type PresetModelDiff } from "./presets.ts";
 import { probeEndpoint, type ProbeResult, type RemoteModel } from "./probe.ts";
+import { describeClineCredential, ensureClineAccessToken, loginClineDeviceFlow } from "./cline-auth.ts";
 import { inputNumber, pickMany, selectOne, showInfo, withProgress } from "./tui.ts";
 
 type CommandContext = Parameters<Parameters<ExtensionAPI["registerCommand"]>[1]["handler"]>[1];
@@ -29,6 +32,8 @@ export interface ManagerHooks {
 	saveAndReregister(poolId: string): void;
 	removePool(poolId: string): void;
 	reloadFromDisk(): void;
+	/** Persist the current config without re-registering (preset sync bookkeeping). */
+	saveConfig(): void;
 	notify(message: string): void;
 }
 
@@ -81,6 +86,215 @@ function describeAuth(probe: ProbeResult): string {
 		: "using x-api-key auth (could not fully verify)";
 }
 
+// ---------------------------------------------------------------------------
+// Cline account credentials (device flow sign-in + pasted tokens)
+// ---------------------------------------------------------------------------
+
+/** Humanize a duration for display: 90s+ → minutes, 90m+ → hours. */
+function formatCooldown(ms: number): string {
+	if (ms < 90_000) return `${Math.ceil(ms / 1000)}s`;
+	if (ms < 90 * 60_000) return `${Math.ceil(ms / 60_000)}m`;
+	return `${Math.ceil(ms / 3_600_000)}h`;
+}
+
+/**
+ * Collect a Cline account credential: the WorkOS device flow (recommended —
+ * refresh tokens keep the access token alive) or a manually pasted access
+ * token (works until it expires). Returns one key entry, or undefined on cancel.
+ */
+async function collectClineKeys(ctx: CommandContext, hooks: ManagerHooks): Promise<PoolKeyConfig[] | undefined> {
+	const how = await selectOne(ctx, "Cline credentials", [
+		{
+			value: "device",
+			label: "Sign in with Cline (device flow)…",
+			description: "Authorize your Cline account in the browser; the token refreshes automatically",
+		},
+		{
+			value: "paste",
+			label: "Paste a Cline access token…",
+			description: "From ~/.cline/data/secrets.json — stops working when it expires",
+		},
+	]);
+	if (how === "device") {
+		let credential: KeyCredential;
+		try {
+			const tokens = await withProgress(ctx, "Cline sign-in", async (update) =>
+				loginClineDeviceFlow({
+					onAuthInfo: async ({ url, userCode }) => {
+						await showInfo(ctx, "Authorize Cline", [
+							"Open this URL in your browser and approve the sign-in:",
+							"",
+							url,
+							"",
+							`User code: ${userCode}`,
+							"",
+							"Sign-in continues automatically once you approve.",
+						]);
+					},
+					onProgress: (message) => update(message),
+				}),
+			);
+			credential = {
+				kind: "cline-oauth",
+				refreshToken: tokens.refreshToken,
+				accessToken: tokens.accessToken,
+				expiresAt: tokens.expiresAt,
+			};
+		} catch (error) {
+			await showInfo(ctx, "Cline sign-in failed", [error instanceof Error ? error.message : String(error)]);
+			return undefined;
+		}
+		return [{ key: credential.accessToken ?? credential.refreshToken, label: "cline-account", enabled: true, credential }];
+	}
+	if (how === "paste") {
+		const raw = await ctx.ui.input("Cline access token", "paste the token");
+		const value = raw?.trim();
+		if (!value) return undefined;
+		return [{ key: value, label: "cline-account", enabled: true }];
+	}
+	return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Preset sync: offer to align preset-created pools with updated presets
+// ---------------------------------------------------------------------------
+
+interface PresetDrift {
+	pool: PoolConfig;
+	preset: Preset;
+	diff: PresetModelDiff;
+	/** Stored fingerprint differs from the shipped preset — the ask-once trigger. */
+	fingerprintStale: boolean;
+	/** Matched by baseUrl only (pool created before preset tracking existed). */
+	legacy: boolean;
+}
+
+function hasModelDiff(diff: PresetModelDiff | undefined): boolean {
+	return !!diff && (diff.added.length > 0 || diff.removed.length > 0 || diff.changed.length > 0);
+}
+
+/**
+ * Resolve the shipped preset a pool belongs to (via the `_preset` marker, or
+ * by baseUrl for legacy pools created before tracking existed) and diff its
+ * current models against the preset.
+ *
+ * The marker's fingerprint is written at pool creation and again the moment a
+ * startup prompt is displayed — so each preset version is asked about at most
+ * once, and declining only mutes the current version (a later preset change
+ * prompts again). Hand-tuning models never triggers the automatic prompt;
+ * those pools stay reachable via /multikey → Check preset updates.
+ */
+function presetDrift(pool: PoolConfig): PresetDrift | undefined {
+	const preset = pool._preset ? findPreset(pool._preset.id) : PRESETS.find((p) => p.baseUrl === pool.baseUrl);
+	if (!preset) return undefined;
+	const fingerprintStale = !pool._preset || pool._preset.fingerprint !== presetFingerprint(preset);
+	return { pool, preset, diff: diffPresetModels(pool.models, preset.models), fingerprintStale, legacy: !pool._preset };
+}
+
+function presetDriftPools(config: KeypoolConfig): PresetDrift[] {
+	return config.pools.map(presetDrift).filter((d): d is PresetDrift => !!d);
+}
+
+/**
+ * Replace the pool's models with the preset's (deep copy) and stamp the
+ * marker with the preset's current fingerprint. Keys, cooldowns, id, and
+ * endpoint are untouched; afterwards the provider is re-registered.
+ */
+function applyPresetModels(hooks: ManagerHooks, pool: PoolConfig, preset: Preset): void {
+	pool.models = JSON.parse(JSON.stringify(preset.models)) as PoolModelConfig[];
+	pool._preset = { id: preset.id, fingerprint: presetFingerprint(preset) };
+	hooks.saveAndReregister(pool.id);
+}
+
+/**
+ * Startup hook: asks once per preset version when shipped presets moved on
+ * from what a pool was created/aligned with. The offered fingerprint is
+ * persisted before the dialog shows, so declining — or the process dying
+ * mid-prompt — never causes a repeat for the same version.
+ */
+export async function maybeOfferPresetUpdates(hooks: ManagerHooks, ctx: CommandContext): Promise<void> {
+	try {
+		const stale = presetDriftPools(hooks.config).filter((d) => d.fingerprintStale);
+		if (stale.length === 0) return;
+		// Persist-on-display: mute this exact preset version before any dialog.
+		for (const { pool, preset } of stale) pool._preset = { id: preset.id, fingerprint: presetFingerprint(preset) };
+		hooks.saveConfig();
+		// Reorder-only drift (no model differences): silently refreshed above.
+		const actionable = stale.filter((d) => hasModelDiff(d.diff));
+		if (actionable.length === 0) return;
+		const summary = actionable.map((d) => `"${d.pool.id}" (${d.preset.name})`).join(", ");
+		const ok = await ctx.ui.confirm(
+			"Preset update available",
+			`Built-in presets changed for pool(s): ${summary}. Review and align now? ` +
+				"(Asked once per preset version; /multikey → Check preset updates always works.)",
+		);
+		if (ok) await checkPresetUpdatesMenu(ctx, hooks);
+	} catch {
+		// Never break session startup over the sync hint.
+	}
+}
+
+/**
+ * /multikey → Check preset updates: lists every pool whose model list differs
+ * from its (tracked or baseUrl-matched) preset — always visible, regardless
+ * of muting, so declined updates stay reachable.
+ */
+export async function checkPresetUpdatesMenu(ctx: CommandContext, hooks: ManagerHooks): Promise<void> {
+	for (;;) {
+		const drifts = presetDriftPools(hooks.config).filter((d) => hasModelDiff(d.diff));
+		if (drifts.length === 0) {
+			await showInfo(ctx, "Preset updates", [
+				"All pools match the current built-in presets.",
+				"",
+				"Pools created from a preset are tracked; pools that predate tracking",
+				"are matched by baseUrl.",
+			]);
+			return;
+		}
+		const action = await selectOne(
+			ctx,
+			"Pools differing from their preset",
+			drifts.map(({ pool, preset, diff }) => ({
+				value: pool.id,
+				label: `${pool.id} ← ${preset.name}`,
+				suffix: "  (differs)",
+				description: describePresetDiff(diff).join("\n"),
+			})),
+		);
+		if (action === null) return;
+		const drift = drifts.find((d) => d.pool.id === action);
+		if (drift) await offerPoolAlignment(ctx, hooks, drift);
+	}
+}
+
+/** Show the diff for one pool and ask whether to align. */
+async function offerPoolAlignment(ctx: CommandContext, hooks: ManagerHooks, drift: PresetDrift): Promise<void> {
+	const { pool, preset, diff } = drift;
+	const choice = await selectOne(ctx, `Align "${pool.id}" with ${preset.name} preset?`, [
+		{
+			value: "align",
+			label: "Align — apply preset models",
+			description:
+				[...describePresetDiff(diff), "", `Result: ${preset.models.map((m) => m.id).join(", ")}`, "Keys, endpoint and settings are untouched."].join("\n"),
+		},
+		{
+			value: "keep",
+			label: "Keep my models",
+			description: drift.fingerprintStale
+				? "No automatic prompt for this preset version; revisit via Check preset updates."
+				: "Your models are kept (preset hasn't changed since the last sync).",
+		},
+	]);
+	if (choice === "align") {
+		applyPresetModels(hooks, pool, preset);
+		hooks.notify(`multikey[${pool.id}]: aligned with ${preset.name} preset — ${pool.models.length} models`);
+	} else if (choice === "keep" && drift.fingerprintStale) {
+		// Seen-and-kept: mute this preset version's automatic prompt.
+		pool._preset = { id: preset.id, fingerprint: presetFingerprint(preset) };
+		hooks.saveConfig();
+	}
+}
+
 export async function runManager(pi: ExtensionAPI, ctx: CommandContext, hooks: ManagerHooks): Promise<void> {
 	for (;;) {
 		const pools = hooks.config.pools;
@@ -88,6 +302,7 @@ export async function runManager(pi: ExtensionAPI, ctx: CommandContext, hooks: M
 			{ value: "status", label: "Status", description: "Live per-key state: in-flight, cooldowns, 429 counts" },
 			{ value: "manage", label: "Manage pools…", description: "Keys, models, endpoints, cooldowns" },
 			{ value: "add", label: "Add pool…", description: "Register another provider (b.ai, nvidia, opencode, …)" },
+			{ value: "presetsync", label: "Check preset updates…", description: "Align preset-created pools with updated built-in presets" },
 			{ value: "reload", label: "Reload config from disk", description: "Re-read multikey.json and re-register providers" },
 			{ value: "usage", label: "Usage tips" },
 			{ value: "exit", label: "Close" },
@@ -115,6 +330,10 @@ export async function runManager(pi: ExtensionAPI, ctx: CommandContext, hooks: M
 		}
 		if (action === "add") {
 			await addPoolWizard(ctx, hooks);
+			continue;
+		}
+		if (action === "presetsync") {
+			await checkPresetUpdatesMenu(ctx, hooks);
 			continue;
 		}
 		if (action === "manage") {
@@ -159,12 +378,13 @@ function renderStatus(hooks: ManagerHooks): string[] {
 			const state = !row.enabled
 				? "disabled"
 				: row.cooldownRemainingMs > 0
-					? `cooldown ${Math.ceil(row.cooldownRemainingMs / 1000)}s (${row.cooldownReason ?? "?"})`
+					? `cooldown ${formatCooldown(row.cooldownRemainingMs)} (${row.cooldownReason ?? "?"})`
 					: row.inflight > 0
 						? `active ×${row.inflight}`
 						: "idle";
+			const credentialNote = row.credential ? `  ·  ${describeClineCredential(row.credential)}` : "";
 			lines.push(
-				`  ${row.label.padEnd(12)} ${row.masked.padEnd(16)} ${state.padEnd(24)} ok:${row.ok} 429:${row.rateLimited} bad:${row.invalid} err:${row.errors}`,
+				`  ${row.label.padEnd(12)} ${row.masked.padEnd(16)} ${state.padEnd(28)} ok:${row.ok} 429:${row.rateLimited} quota:${row.quotaLimited} bad:${row.invalid} err:${row.errors}${credentialNote}`,
 			);
 		}
 		lines.push("");
@@ -238,7 +458,7 @@ async function keysMenu(ctx: CommandContext, hooks: ManagerHooks, pool: PoolConf
 			const state = !k.enabled
 				? "disabled"
 				: row && row.cooldownRemainingMs > 0
-					? `cooldown ${Math.ceil(row.cooldownRemainingMs / 1000)}s`
+					? `cooldown ${formatCooldown(row.cooldownRemainingMs)}${row.cooldownReason ? ` (${row.cooldownReason})` : ""}`
 					: row && row.inflight > 0
 						? `active ×${row.inflight}`
 						: "idle";
@@ -246,12 +466,32 @@ async function keysMenu(ctx: CommandContext, hooks: ManagerHooks, pool: PoolConf
 				value: String(i),
 				label: k.label ?? maskKey(k.key),
 				suffix: `  ${maskKey(k.key)}  ${state}`,
-				description: `ok:${row?.ok ?? 0} 429:${row?.rateLimited ?? 0} bad:${row?.invalid ?? 0}`,
+				description: [
+					`ok:${row?.ok ?? 0} 429:${row?.rateLimited ?? 0} quota:${row?.quotaLimited ?? 0} bad:${row?.invalid ?? 0}`,
+					k.credential ? describeClineCredential(k.credential) : undefined,
+				]
+					.filter(Boolean)
+					.join(" · "),
 			};
 		});
-		const action = await selectOne(ctx, `Keys: ${pool.id}`, [...items, { value: "__add", label: "＋ Add key…" }, { value: "__back", label: "Back" }]);
+		const action = await selectOne(ctx, `Keys: ${pool.id}`, [...items, { value: "__add", label: "＋ Add key…", description: isClineEndpoint(pool.baseUrl) ? "Sign in with Cline (device flow) or paste a token" : undefined }, { value: "__back", label: "Back" }]);
 		if (action === null || action === "__back") return;
 		if (action === "__add") {
+			// Cline accounts authenticate via OAuth instead of static API keys.
+			if (isClineEndpoint(pool.baseUrl)) {
+				const collected = await collectClineKeys(ctx, hooks);
+				if (collected && collected.length > 0) {
+					const entry = collected[0]!;
+					if (pool.keys.some((k) => k.credential?.refreshToken === entry.credential?.refreshToken || k.key === entry.key)) {
+						hooks.notify(`multikey[${pool.id}]: this Cline credential is already in the pool`);
+					} else {
+						pool.keys.push(entry);
+						hooks.saveAndReregister(pool.id);
+						hooks.notify(`multikey[${pool.id}]: added Cline credential ${entry.label ?? entry.key.slice(0, 6)}…`);
+					}
+				}
+				continue;
+			}
 			const raw = await ctx.ui.input(`Add API key #${pool.keys.length + 1}`, "paste an API key");
 			const value = raw?.trim();
 			if (value) {
@@ -269,6 +509,15 @@ async function keysMenu(ctx: CommandContext, hooks: ManagerHooks, pool: PoolConf
 		const key = pool.keys[index];
 		if (!key) continue;
 		const keyAction = await selectOne(ctx, `Key: ${key.label ?? maskKey(key.key)}`, [
+			...(key.credential
+				? [
+						{
+							value: "refresh",
+							label: "Refresh Cline token now…",
+							description: describeClineCredential(key.credential),
+						},
+					]
+				: []),
 			{ value: "toggle", label: key.enabled === false ? "Enable" : "Disable" },
 			{ value: "label", label: "Edit label…" },
 			{ value: "replace", label: "Replace value…" },
@@ -276,6 +525,22 @@ async function keysMenu(ctx: CommandContext, hooks: ManagerHooks, pool: PoolConf
 			{ value: "back", label: "Back" },
 		]);
 		if (keyAction === null || keyAction === "back") continue;
+		if (keyAction === "refresh" && key.credential) {
+			try {
+				const fresh = await withProgress(ctx, "Refreshing Cline token…", () =>
+					ensureClineAccessToken(key.credential!, { force: true }),
+				);
+				key.credential.refreshToken = fresh.refreshToken;
+				key.credential.accessToken = fresh.accessToken;
+				key.credential.expiresAt = fresh.expiresAt;
+				key.key = fresh.accessToken;
+				hooks.saveAndReregister(pool.id);
+				hooks.notify(`multikey[${pool.id}]: Cline token refreshed for ${key.label ?? maskKey(key.key)}`);
+			} catch (error) {
+				hooks.notify(`multikey[${pool.id}]: Cline token refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+			}
+			continue;
+		}
 		if (keyAction === "toggle") {
 			key.enabled = key.enabled === false;
 			hooks.saveAndReregister(pool.id);
@@ -305,13 +570,14 @@ async function keysMenu(ctx: CommandContext, hooks: ManagerHooks, pool: PoolConf
 
 async function modelsMenu(ctx: CommandContext, hooks: ManagerHooks, pool: PoolConfig): Promise<void> {
 	for (;;) {
+		const stale = hasModelDiff(presetDrift(pool)?.diff);
 		const items = pool.models.map((m) => ({
 			value: m.id,
 			label: m.id,
 			suffix: m.reasoning ? "  🧠" : "",
 			description: `ctx: ${m.contextWindow ?? 128000} · max: ${m.maxTokens ?? 16384} · in: ${(m.input ?? ["text"]).join("+")}`,
 		}));
-		const action = await selectOne(ctx, `Models: ${pool.id}`, [
+		const action = await selectOne(ctx, `Models: ${pool.id}${stale ? "  (preset outdated)" : ""}`, [
 			...items,
 			{ value: "__add", label: "＋ Add model…" },
 			{ value: "__back", label: "Back" },
@@ -622,8 +888,18 @@ async function addPresetPool(ctx: CommandContext, hooks: ManagerHooks, preset: P
 		return;
 	}
 	const poolId = idChoice.id;
-	const keys = await askKeys(ctx, hooks, preset.keyHint);
-	if (keys === undefined) return;
+	// Cline accounts have no static API keys — collect an OAuth credential
+	// (device flow) or a pasted access token instead of the generic key prompt.
+	let keyConfigs: PoolKeyConfig[];
+	if (preset.id === "cline-free") {
+		const collected = await collectClineKeys(ctx, hooks);
+		if (collected === undefined) return;
+		keyConfigs = collected;
+	} else {
+		const keys = await askKeys(ctx, hooks, preset.keyHint);
+		if (keys === undefined) return;
+		keyConfigs = keys.map((key, i) => ({ key, label: `key-${i + 1}`, enabled: true }));
+	}
 
 	// Light-touch verification: probe the preset endpoint with the first key.
 	// The model specs are curated, so this is only a key sanity check.
@@ -631,12 +907,12 @@ async function addPresetPool(ctx: CommandContext, hooks: ManagerHooks, preset: P
 	let authNote = "keys not verified (offline?)";
 	try {
 		probe = await withProgress(ctx, `Verifying key against ${preset.baseUrl}…`, (update) =>
-			probeEndpoint(preset.baseUrl, keys[0]!, {
+			probeEndpoint(preset.baseUrl, keyConfigs[0]!.key, {
 				chatModelId: preset.models[0]?.id,
 				onLog: (line) => update(line.trimEnd()),
 			}),
 		);
-		authNote = describeAuth(probe);
+		authNote = keyConfigs[0]!.credential ? `Cline account credential (${describeClineCredential(keyConfigs[0]!.credential)})` : describeAuth(probe);
 		if (probe.authStatus === "rejected") {
 			const proceed = await ctx.ui.confirm(
 				"Key rejected",
@@ -648,7 +924,8 @@ async function addPresetPool(ctx: CommandContext, hooks: ManagerHooks, preset: P
 		// Probe must never block pool creation.
 	}
 
-	const pool = poolFromPreset(preset, poolId, keys);
+	const pool = poolFromPreset(preset, poolId, keyConfigs.map((k) => k.key));
+	pool.keys = keyConfigs;
 	if (probe?.authStatus === "confirmed" && probe.auth === "api-key") pool.auth = "api-key";
 	hooks.config.pools.push(pool);
 	hooks.saveAndReregister(poolId);

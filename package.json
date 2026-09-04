@@ -1,6 +1,6 @@
 {
 	"name": "pi-multikey",
-	"version": "1.7.1",
+	"version": "1.8.0",
 	"description": "One pi provider backed by many API keys: automatic 429 rotation, per-request key leases for concurrent subagents, and a /multikey management TUI",
 	"keywords": [
 		"pi-package",
@@ -24,7 +24,9 @@
 	},
 	"files": [
 		"index.ts",
+		"cline-auth.ts",
 		"config.ts",
+		"identity.ts",
 		"presets.ts",
 		"probe.ts",
 		"pool.ts",

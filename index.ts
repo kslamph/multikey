@@ -11,10 +11,11 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getApiProvider, type Api } from "@earendil-works/pi-ai";
-import { configPath, endpointHeaders, loadConfig, saveConfig, toProviderModels, type KeypoolConfig, type PoolConfig } from "./config.ts";
+import { configPath, endpointHeaders, ensureDeviceId, loadConfig, saveConfig, toProviderModels, type KeypoolConfig, type PoolConfig } from "./config.ts";
+import { resetSessionId, resetTaskId } from "./identity.ts";
 import { KeyPool } from "./pool.ts";
 import { createRotatingStreamSimple } from "./stream.ts";
-import { runManager, type ManagerHooks } from "./manage.ts";
+import { runManager, maybeOfferPresetUpdates, type ManagerHooks } from "./manage.ts";
 
 type CommandContext = Parameters<Parameters<ExtensionAPI["registerCommand"]>[1]["handler"]>[1];
 
@@ -35,6 +36,8 @@ export default function multikey(pi: ExtensionAPI) {
 
 	const pools = new Map<string, KeyPool>();
 	for (const pool of config.pools) pools.set(pool.id, new KeyPool(pool));
+	// OpenCode Zen needs a stable per-device id; persist one when a Zen pool exists.
+	ensureDeviceId(config);
 
 	let ui: ExtensionContext["ui"] | undefined;
 	const notify = (message: string) => {
@@ -62,6 +65,9 @@ export default function multikey(pi: ExtensionAPI) {
 		const keyPool = pools.get(pool.id) ?? new KeyPool(pool);
 		keyPool.updateConfig(pool);
 		pools.set(pool.id, keyPool);
+		// A Zen pool needs a durable device identity; adopt one before the first
+		// request goes out (no-op once multikey.json has a deviceId).
+		ensureDeviceId(config);
 
 		pi.registerProvider(pool.id, {
 			name: pool.name ?? pool.id,
@@ -71,7 +77,7 @@ export default function multikey(pi: ExtensionAPI) {
 			api,
 			headers: { ...pool.headers, ...endpointHeaders(pool.baseUrl) },
 			models: toProviderModels(pool),
-			streamSimple: createRotatingStreamSimple(keyPool, api, notify),
+			streamSimple: createRotatingStreamSimple(keyPool, api, notify, () => saveConfig(config)),
 		});
 		return undefined;
 	}
@@ -131,8 +137,15 @@ export default function multikey(pi: ExtensionAPI) {
 		}
 	}
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		ui = ctx.ui;
+	// One OpenCode session id / Cline task id per conversation: /new, resume and
+	// fork switch to a different conversation, so drop the cached ids for those.
+	if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
+		resetSessionId();
+		resetTaskId();
+	}
+		ensureDeviceId(config);
 		for (const { id, reason } of skipped) {
 			notify(`multikey: provider "${id}" not available — ${reason}. Fix it via /multikey → Manage pools.`);
 		}
@@ -149,6 +162,22 @@ export default function multikey(pi: ExtensionAPI) {
 				notify(`multikey: no multi-key providers found in models.json — run /multikey → Add pool to create one at ${path}.`);
 			}
 		}
+		if (ctx.hasUI) {
+			const hooks: ManagerHooks = {
+				get config() {
+					return config;
+				},
+				pools,
+				saveAndReregister,
+				removePool,
+				reloadFromDisk,
+				saveConfig: () => saveConfig(config),
+				notify,
+			};
+			// Ask (at most once per preset version) whether to align preset-created
+			// pools with updated built-in presets. Never blocks or breaks startup.
+			await maybeOfferPresetUpdates(hooks, ctx as CommandContext);
+		}
 	});
 
 	const managerHandler = async (_args: unknown, ctx: CommandContext) => {
@@ -164,6 +193,7 @@ export default function multikey(pi: ExtensionAPI) {
 			saveAndReregister,
 			removePool,
 			reloadFromDisk,
+			saveConfig: () => saveConfig(config),
 			notify,
 		};
 		await runManager(pi, ctx, hooks);

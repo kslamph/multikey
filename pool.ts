@@ -6,20 +6,23 @@
  * concurrent subagents across different keys automatically.
  */
 
-import type { PoolConfig } from "./config.ts";
+import type { KeyCredential, PoolConfig } from "./config.ts";
 import { maskKey } from "./config.ts";
 
-export type KeyOutcome = "ok" | "rate_limited" | "invalid" | "error";
+export type KeyOutcome = "ok" | "rate_limited" | "quota_exhausted" | "invalid" | "error";
 
 export interface Lease {
 	key: string;
 	label: string;
 	acquiredAt: number;
+	/** OAuth credential behind this key, when it has one (Cline accounts). */
+	credential?: KeyCredential;
 }
 
 interface KeyStat {
 	ok: number;
 	rateLimited: number;
+	quotaLimited: number;
 	invalid: number;
 	errors: number;
 	inflight: number;
@@ -29,7 +32,7 @@ interface KeyStat {
 }
 
 function newStat(): KeyStat {
-	return { ok: 0, rateLimited: 0, invalid: 0, errors: 0, inflight: 0, cooldownUntil: 0, lastUsed: 0 };
+	return { ok: 0, rateLimited: 0, quotaLimited: 0, invalid: 0, errors: 0, inflight: 0, cooldownUntil: 0, lastUsed: 0 };
 }
 
 export class KeyPool {
@@ -49,10 +52,10 @@ export class KeyPool {
 		return s;
 	}
 
-	private enabledKeys(): { key: string; label: string }[] {
+	private enabledKeys(): { key: string; label: string; credential?: KeyCredential }[] {
 		return this.config.keys
 			.filter((k) => k.enabled !== false)
-			.map((k) => ({ key: k.key, label: k.label ?? maskKey(k.key) }));
+			.map((k) => ({ key: k.key, label: k.label ?? maskKey(k.key), credential: k.credential }));
 	}
 
 	get size(): number {
@@ -85,7 +88,7 @@ export class KeyPool {
 				const chosen = candidates[0]!;
 				chosen.stat.inflight++;
 				chosen.stat.lastUsed = now;
-				return { key: chosen.key, label: chosen.label, acquiredAt: now };
+				return { key: chosen.key, label: chosen.label, acquiredAt: now, credential: chosen.credential };
 			}
 
 			// All keys cooling: wait for the earliest recovery (bounded to 60s).
@@ -114,6 +117,14 @@ export class KeyPool {
 				s.rateLimited++;
 				s.cooldownUntil = Math.max(s.cooldownUntil, now + (cooldownMs ?? this.config.cooldownMs ?? 20_000));
 				s.cooldownReason = "429";
+				break;
+			case "quota_exhausted":
+				// Daily per-account quota (Cline free models): the server tells us when
+				// it resets ("Try again in 23h 59m"), so the cooldown is hours, not the
+				// 20s rate-limit rotation. A sane fallback if the parse ever fails.
+				s.quotaLimited++;
+				s.cooldownUntil = Math.max(s.cooldownUntil, now + (cooldownMs ?? 30 * 60_000));
+				s.cooldownReason = "daily limit";
 				break;
 			case "invalid":
 				s.invalid++;
@@ -147,6 +158,34 @@ export class KeyPool {
 		});
 	}
 
+	/**
+	 * Persist a refreshed OAuth credential onto the key's config entry (the
+	 * access token also becomes the key value so every consumer sees the same
+	 * token). Live stats move with the rotation — they are keyed by the key
+	 * string, so the entry's counters (including its in-flight count) must be
+	 * re-keyed to the new token. The caller saves the config to disk.
+	 */
+	applyClineCredential(lease: Lease, update: { accessToken: string; refreshToken: string; expiresAt?: number }): void {
+		const entry = this.config.keys.find(
+			(k) => k.credential === lease.credential || (k.credential && lease.credential && k.credential.refreshToken === lease.credential.refreshToken),
+		);
+		if (!entry?.credential) return;
+		const oldKey = entry.key;
+		entry.credential.refreshToken = update.refreshToken;
+		entry.credential.accessToken = update.accessToken;
+		entry.credential.expiresAt = update.expiresAt;
+		entry.key = update.accessToken;
+		if (oldKey !== update.accessToken) {
+			const stat = this.stats.get(oldKey);
+			if (stat) {
+				this.stats.delete(oldKey);
+				this.stats.set(update.accessToken, stat);
+			}
+		}
+		lease.key = update.accessToken;
+		lease.credential = entry.credential;
+	}
+
 	/** One row per configured key, for TUI status display. */
 	statusRows(): {
 		label: string;
@@ -155,10 +194,12 @@ export class KeyPool {
 		inflight: number;
 		ok: number;
 		rateLimited: number;
+		quotaLimited: number;
 		invalid: number;
 		errors: number;
 		cooldownRemainingMs: number;
 		cooldownReason?: string;
+		credential?: KeyCredential;
 	}[] {
 		const now = Date.now();
 		return this.config.keys.map((k) => {
@@ -170,10 +211,12 @@ export class KeyPool {
 				inflight: s.inflight,
 				ok: s.ok,
 				rateLimited: s.rateLimited,
+				quotaLimited: s.quotaLimited,
 				invalid: s.invalid,
 				errors: s.errors,
 				cooldownRemainingMs: Math.max(0, s.cooldownUntil - now),
 				cooldownReason: s.cooldownReason,
+				credential: k.credential,
 			};
 		});
 	}

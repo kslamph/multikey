@@ -27,8 +27,8 @@ pi install /path/to/multikey
 /multikey → Add pool… → Preset: B.AI → 逐行粘贴 key（一行一个，留空结束）
 ```
 
-选 preset 后 endpoint、compat、6 个模型的全部设定自动就位，模型通过
-`bai/<model-id>` 直接可用，例如 `bai/deepseek-v4-flash`。
+选 preset 后 endpoint、compat、4 个模型的全部设定自动就位，模型通过
+`bai/<model-id>` 直接可用，例如 `bai/hy3`。
 
 ## Presets
 
@@ -38,8 +38,6 @@ DeepSeek / Tencent / 小米官方文档，并对每个 thinking 档位做过实�
 
 | 模型 | ctx / max-out | 模态 | 生效 thinking 档位 |
 |---|---|---|---|
-| deepseek-v4-flash | 1M / 384K | text | off · low · high · max |
-| deepseek-v4-flash-vision-exp | 1M / 384K | text+image | off · low · high · max |
 | hy3 | 256K / 128K | text | off · low · high |
 | mimo-v2.5 | 1M / 128K | text+image | off · high（官方：low/medium/high 行为相同） |
 | qwen3.8-flash | 1M / 131K | text+image | off · low · medium · xhigh |
@@ -52,26 +50,45 @@ DeepSeek / Tencent / 小米官方文档，并对每个 thinking 档位做过实�
 ### OpenCode Zen（免费层）
 
 端点 `https://opencode.ai/zen/v1`；密钥从 [opencode.ai/auth](https://opencode.ai/auth) → workspace Keys 获取。
-上下文/最大输出为 **Zen 免费层限制**（models.dev `opencode` provider 与 pi 内置 opencode 目录一致）；
-原始模型更大——MiMo V2.5 = 1M ctx，Hy3 = 262K ctx。
-`muse-spark-1.2-contributor-free` 使用 OpenAI **Responses** API；其余七个使用 chat completions。
+上下文/最大输出为 **Zen 免费层限制**（opencode.ai/docs/zen）；原始模型更大——MiMo V2.5 = 1M ctx。
+`muse-spark-1.3-contributor-free` 使用 OpenAI **Responses** API；其余五个使用 chat completions。
 
-对该端点的请求会自动携带 opencode.ai 期望的 `User-Agent` 头（`opencode/1.15.0 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13`）——只要 pool 的 baseUrl 是 `https://opencode.ai/zen/v1`，探测和真实请求都会附加。
+只要 pool 的 baseUrl 是 `https://opencode.ai/zen/v1`，探测和真实请求都会伪装成官方 OpenCode 客户端：
+
+| 请求头 | 值 | 生命周期 |
+|---|---|---|
+| `x-opencode-client` | `tui` | 常量 |
+| `User-Agent` | `opencode/0.1.50 ai-sdk/openai-compatible/3.0.41` | 常量 |
+| `x-opencode-session` | `ses_` + 12 位十六进制 + 14 位 base62 | 每个 pi 会话一个；`/new`、resume、fork 时重新生成 |
+| `x-opencode-request` | v4 UUID | 每台机器一个，作为 `deviceId` 持久化在 `multikey.json` |
+
+session id 复现了 OpenCode 自己的 `Identifier.create()`：前 12 位十六进制编码 `timestamp_ms * 0x1000 + counter` 后按位取反（降序），因此新会话排序在前；计数器仅在毫秒变化时重置。
 
 | 模型 | ctx / max-out | 模态 | 生效 thinking 档位 |
 |---|---|---|---|
 | big-pickle | 200K / 32K | text | 始终思考（无 thinkingLevelMap，与 pi 内置目录一致） |
-| deepseek-v4-flash-free | 200K / 128K | text | off · low · high · max（沿用 b.ai preset 的 deepseek-v4-flash） |
 | mimo-v2.5-free | 200K / 32K | text+image | 始终思考（无 thinkingLevelMap） |
-| hy3-free | 190K / 64K | text | low · medium · high（无 off） |
-| ling-3.0-flash-fin-free | 256K / 32K | text | 始终思考（无 thinkingLevelMap） |
+| ling-3.0-flash-fin-free | 262K / 32K | text | 始终思考（无 thinkingLevelMap） |
 | nemotron-3-ultra-free | 1M / 128K | text | 始终思考（无 thinkingLevelMap） |
-| nemotron-3.5-lightning-free | 256K / 256K | text | 始终思考（无 thinkingLevelMap） |
-| muse-spark-1.2-contributor-free | 1M / 128K | text+image | minimal · low · medium · high · xhigh（无 off，Responses API） |
+| nemotron-3.5-lightning-free | 262K / 262K | text | 始终思考（无 thinkingLevelMap） |
+| muse-spark-1.3-contributor-free | 1M / 131K | text+image | 始终思考（无 reasoning_options；Responses API） |
 
-> 以上八个模型在 OpenCode 收集反馈期间均免费（零 token 费用）；数据可能用于改进模型（Nemotron 免费端点为 NVIDIA 试用——请勿提交机密数据）。
+> 以上六个模型在 OpenCode 收集反馈期间均免费（零 token 费用）；数据可能用于改进模型（Nemotron 免费端点为 NVIDIA 试用；Muse Spark Contributor 模型授权 Meta 用于训练——请勿提交机密数据）。
+>
+> 免费列表变化后已从 preset 移除：`deepseek-v4-flash-free`（在 Zen 上已转为**付费**）、`hy3-free`（不再提供免费层）、`muse-spark-1.2-contributor-free`（1.3 的前身遗留变体）。
 
 新增 preset：在 `presets.ts` 的 `PRESETS` 数组里加一项即可。
+
+### Preset 同步
+
+从 preset 创建的池会被追踪：`poolFromPreset` 会在 `multikey.json` 里写入 `_preset` 标记（preset id + 模型列表的指纹）。
+
+- 内置 preset 变化（模型增删、参数调整）后，pi 会在会话启动时**只询问一次**：“内置 preset 已变化……是否立即对齐？”
+- **Align** 用 preset 的模型列表替换池的模型；密钥、endpoint、其他设置保留。**Keep my models**——以及 Esc、甚至提示中途崩溃——都会静音该版本：提供的指纹在弹窗**之前**就已持久化，同一版本绝不会重复询问。
+- preset **再次**变化（新指纹）时会再询问一次。每个版本恰好一次。
+- 手动调过参数的池不会触发自动询问（自上次同步后 preset 没变）；它们始终可以通过 `/multikey → Check preset updates…` 检查，该入口不受静音影响。
+- 旧版本创建的池（早于追踪功能）按 `baseUrl` 匹配并以同样方式纳入追踪。
+- 指纹只覆盖 preset 的**模型列表**——compat/API/描述变化不会触发询问。
 
 ## 配置
 
@@ -83,7 +100,7 @@ DeepSeek / Tencent / 小米官方文档，并对每个 thinking 档位做过实�
 {
   "pools": [
     {
-      "id": "bai",                          // pi 里的 provider id → bai/deepseek-v4-flash
+      "id": "bai",                          // pi 里的 provider id → bai/hy3
       "name": "B.AI (Key Pool)",
       "baseUrl": "https://api.b.ai/v1",
       "api": "openai-completions",
