@@ -27,7 +27,7 @@ pi install /path/to/multikey
 /multikey → Add pool… → Preset: B.AI → 逐行粘贴 key（一行一个，留空结束）
 ```
 
-选 preset 后 endpoint、compat、4 个模型的全部设定自动就位，模型通过
+选 preset 后 endpoint、compat、3 个模型的全部设定自动就位，模型通过
 `bai/<model-id>` 直接可用，例如 `bai/hy3`。
 
 ## Presets
@@ -41,7 +41,6 @@ DeepSeek / Tencent / 小米官方文档，并对每个 thinking 档位做过实�
 | hy3 | 256K / 128K | text | off · low · high |
 | mimo-v2.5 | 1M / 128K | text+image | off · high（官方：low/medium/high 行为相同） |
 | qwen3.8-flash | 1M / 131K | text+image | off · low · medium · xhigh |
-| glm-5.3-flash | 1M / 131K | text+image | low · high · max（始终思考，无 off） |
 
 > 为什么必须显式写 `null`：pi 的 `getSupportedThinkingLevels` 把 `mapped === null`
 > 视为不支持并隐藏该档，但**省略**会被当作支持并把档名原样发给 API；

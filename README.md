@@ -29,7 +29,7 @@ pi install /path/to/multikey
 /multikey → Add pool… → Preset: B.AI → paste keys one per line (blank line to finish)
 ```
 
-After picking the preset, the endpoint, compat, and all 4 model definitions are wired up automatically. Models are available directly as `bai/<model-id>`, e.g. `bai/hy3`.
+After picking the preset, the endpoint, compat, and all 3 model definitions are wired up automatically. Models are available directly as `bai/<model-id>`, e.g. `bai/hy3`.
 
 ## Presets
 
@@ -40,7 +40,6 @@ Built-in presets decouple "model settings" from "keys". The data comes from b.ai
 | hy3 | 256K / 128K | text | off · low · high |
 | mimo-v2.5 | 1M / 128K | text+image | off · high (official: low/medium/high behave identically) |
 | qwen3.8-flash | 1M / 131K | text+image | off · low · medium · xhigh |
-| glm-5.3-flash | 1M / 131K | text+image | low · high · max (always thinks, no off) |
 
 > Why `null` must be explicit: pi's `getSupportedThinkingLevels` treats `mapped === null` as unsupported and hides that level, but **omitting** it is treated as supported and the level name is sent to the API verbatim; `xhigh` / `max` additionally require an explicit non-null value to be usable.
 

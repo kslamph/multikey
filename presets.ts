@@ -57,7 +57,7 @@ export const PRESETS: Preset[] = [
 	{
 		id: "b-ai",
 		name: "B.AI",
-		description: "api.b.ai — Hunyuan Hy3, MiMo V2.5, Qwen3.8, GLM 5.3 (4 models)",
+		description: "api.b.ai — Hunyuan Hy3, MiMo V2.5, Qwen3.8 (3 models)",
 		defaultPoolId: "bai",
 		baseUrl: "https://api.b.ai/v1",
 		api: "openai-completions",
@@ -95,17 +95,6 @@ export const PRESETS: Preset[] = [
 				contextWindow: 1_000_000,
 				maxTokens: 131_072,
 				thinkingLevelMap: levels({ off: "none", low: "low", medium: "medium", xhigh: "xhigh" }),
-			},
-			{
-				// docs.b.ai/llmservice/models/glm-5-3-flash — always thinks (off unsupported);
-				// reasoning_effort: low/high/max, default max.
-				id: "glm-5.3-flash",
-				name: "GLM 5.3 Flash",
-				reasoning: true,
-				input: ["text", "image"],
-				contextWindow: 1_000_000,
-				maxTokens: 131_072,
-				thinkingLevelMap: levels({ low: "low", high: "high", max: "max" }),
 			},
 		],
 	},
