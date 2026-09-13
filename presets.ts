@@ -188,7 +188,7 @@ export const PRESETS: Preset[] = [
 		id: "cline-free",
 		name: "Cline Free",
 		description:
-			"api.cline.bot — Cline account free tier: DeepSeek V4 Flash, Longcat 2.0, Laguna S 2.1, GLM 5.2 (daily per-model quota, lineup rotates)",
+			"api.cline.bot — Cline account free tier: DeepSeek V4 Flash, Longcat 2.0, Laguna S 2.1, GLM 5.3, Solar Pro 4, Muse Spark 1.3 (daily per-model quota, lineup rotates)",
 		defaultPoolId: "cline",
 		baseUrl: "https://api.cline.bot/api/v1",
 		api: "openai-completions",
@@ -215,16 +215,39 @@ export const PRESETS: Preset[] = [
 				name: "Laguna S 2.1 (Free)",
 				reasoning: true,
 				input: ["text"],
-				// Poolside doesn't publish the window; safe default, tune if needed.
-				contextWindow: 128_000,
+				// Window/output measured from the live free tier (tuned in multikey.json).
+				contextWindow: 262_144,
+				maxTokens: 32_768,
+			},
+			{
+				// z-ai/glm-5.2:free retired from the Cline lineup (id answers "model not found");
+				// succeeded by glm-5.3-flash. Always-on reasoning, no effort tiers; vision input.
+				id: "z-ai/glm-5.3-flash",
+				name: "GLM 5.3 (Free)",
+				reasoning: true,
+				input: ["text", "image"],
+				contextWindow: 1_048_576,
+				maxTokens: 128_000,
+			},
+			{
+				id: "upstage/solar-pro4",
+				name: "Upstage Solar Pro 4",
+				reasoning: true,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 524_000,
 				maxTokens: 16_384,
 			},
 			{
-				id: "z-ai/glm-5.2:free",
-				name: "GLM 5.2 (Free)",
+				// Same Meta model as OpenCode Zen's muse-spark-1.3-contributor-free, served
+				// through Cline's chat-completions endpoint (no Responses API / session
+				// affinity needed). Always-on reasoning; text + image input.
+				id: "meta/muse-spark-1.3-contributor",
+				name: "Meta Muse Spark 1.3 Contributor",
 				reasoning: true,
-				input: ["text"],
-				contextWindow: 200_000,
+				input: ["text", "image"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1_048_576,
 				maxTokens: 131_072,
 			},
 		],

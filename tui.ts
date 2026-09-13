@@ -267,7 +267,9 @@ export async function pickMany(
 				if (v.length === 0) {
 					add(theme.fg("warning", " No matches."));
 				} else {
-					for (let i = 0; i < Math.min(v.length, maxVisible); i++) {
+					const start = Math.max(0, Math.min(cursor - Math.floor(maxVisible / 2), Math.max(0, v.length - maxVisible)));
+					const end = Math.min(v.length, start + maxVisible);
+					for (let i = start; i < end; i++) {
 						const item = v[i]!;
 						const active = i === cursor;
 						const check = selected.has(item.value) ? theme.fg("accent", "✓") : " ";
