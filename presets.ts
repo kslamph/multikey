@@ -188,34 +188,44 @@ export const PRESETS: Preset[] = [
 		id: "cline-free",
 		name: "Cline Free",
 		description:
-			"api.cline.bot — Cline account free tier: DeepSeek V4 Flash, Longcat 2.0, Laguna S 2.1, GLM 5.3, Solar Pro 4, Muse Spark 1.3 (daily per-model quota, lineup rotates)",
+			"api.cline.bot — Cline account free tier: DeepSeek V4.1 Flash, Laguna S 2.1, GLM 5.3, Solar Pro 4, Muse Spark 1.3, Union Alpha (daily per-model quota, lineup rotates)",
 		defaultPoolId: "cline",
 		baseUrl: "https://api.cline.bot/api/v1",
 		api: "openai-completions",
 		keyHint: "Cline account — use 'Sign in with Cline (device flow)', or paste an access token from ~/.cline/data/secrets.json",
+		// FREE-TIER MODEL IDS ARE EXACT — copy them from the `free` bucket of
+		// GET /api/v1/ai/cline/recommended-models, NOT from GET /models (the
+		// OpenRouter catalog dump). Entries prefixed `cline-free/` are only free
+		// under that exact id: their raw vendor id (e.g. deepseek/deepseek-v4.1-flash)
+		// routes to usage-based billing and answers 402 insufficient_credits on a
+		// zero-balance account, while the cline-free/ id rides the daily per-model
+		// quota ($0). The cline-free/ namespace is additionally gated on the
+		// X-CLIENT-TYPE header — already sent on every request via
+		// endpointHeaders() in config.ts, so no extra config is needed.
+		// Verified live 2026-09-17 (probe account, multikey's exact header set):
+		// raw deepseek-v4.1-flash → 402; cline-free/deepseek-v4.1-flash → 200, $0.
 		models: [
 			{
-				id: "deepseek/deepseek-v4-flash",
-				name: "DeepSeek V4 Flash",
+				// Feed id: cline-free/deepseek-v4.1-flash. The raw id
+				// (deepseek/deepseek-v4.1-flash) is usage-billed — see the comment above.
+				// Catalog (openrouter): ctx 1048576, out 384000 (both verified live), text+image.
+				// Effort tiers verified live via reasoning:{effort} (incl. "none" = reasoning off).
+				id: "cline-free/deepseek-v4.1-flash",
+				name: "DeepSeek V4.1 Flash (Free)",
 				reasoning: true,
-				input: ["text"],
-				contextWindow: 1_000_000,
-				maxTokens: 131_072,
+				input: ["text", "image"],
+				contextWindow: 1_048_576,
+				maxTokens: 384_000,
+				compat: { thinkingFormat: "openrouter" },
+				thinkingLevelMap: levels({ off: "none", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" }),
 			},
 			{
-				id: "meituan/longcat-2.0",
-				name: "Longcat 2.0",
-				reasoning: true,
-				input: ["text"],
-				contextWindow: 1_000_000,
-				maxTokens: 131_072,
-			},
-			{
+				// Free at its raw id (no cline-free/ prefix in the feed); 262K window measured
+				// live by the preset author. Not in any catalog (stealth) — sizes unverified.
 				id: "poolside/laguna-s-2.1:free",
 				name: "Laguna S 2.1 (Free)",
 				reasoning: true,
 				input: ["text"],
-				// Window/output measured from the live free tier (tuned in multikey.json).
 				contextWindow: 262_144,
 				maxTokens: 32_768,
 			},
@@ -230,25 +240,48 @@ export const PRESETS: Preset[] = [
 				maxTokens: 128_000,
 			},
 			{
-				id: "upstage/solar-pro4",
-				name: "Upstage Solar Pro 4",
+				// Feed id: cline-free/solar-pro4 (raw upstage/solar-pro4 is usage-billed).
+				// Catalog: ctx 524288 (1M rejected live: "maximum context length is 524288"),
+				// out 131072 (accepted live). Effort: none/high only (verified live).
+				id: "cline-free/solar-pro4",
+				name: "Upstage Solar Pro 4 (Free)",
 				reasoning: true,
 				input: ["text"],
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				contextWindow: 524_000,
-				maxTokens: 16_384,
+				contextWindow: 524_288,
+				maxTokens: 131_072,
+				compat: { thinkingFormat: "openrouter" },
+				thinkingLevelMap: levels({ off: "none", high: "high" }),
 			},
 			{
 				// Same Meta model as OpenCode Zen's muse-spark-1.3-contributor-free, served
 				// through Cline's chat-completions endpoint (no Responses API / session
 				// affinity needed). Always-on reasoning; text + image input.
-				id: "meta/muse-spark-1.3-contributor",
-				name: "Meta Muse Spark 1.3 Contributor",
+				// Feed id: cline-free/muse-spark-1.3-contributor (raw meta/… is usage-billed).
+				// Catalog: ctx 1048576, out 943718, effort minimal..max (no toggle = always on).
+				// NOTE: the cline-free/ id answered "not available in your region" from the
+				// PH (2026-09-17 probe); the model may be region-gated on the free tier, so
+				// catalog values are unverified against the live free route.
+				id: "cline-free/muse-spark-1.3-contributor",
+				name: "Meta Muse Spark 1.3 Contributor (Free)",
 				reasoning: true,
 				input: ["text", "image"],
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				contextWindow: 1_048_576,
-				maxTokens: 131_072,
+				maxTokens: 943_718,
+				compat: { thinkingFormat: "openrouter" },
+				thinkingLevelMap: levels({ minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" }),
+			},
+			{
+				// Stealth promo model; free at its raw id (no cline-free/ prefix in the feed).
+				// Not in any catalog (stealth) — sizes/reasoning copied from the live pool,
+				// unverified.
+				id: "stealth/union-alpha",
+				name: "Union Alpha",
+				reasoning: true,
+				input: ["text"],
+				contextWindow: 262_000,
+				maxTokens: 16_384,
 			},
 		],
 	},
