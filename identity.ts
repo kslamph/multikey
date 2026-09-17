@@ -5,11 +5,18 @@
  * set in packages/opencode/src/session/llm/request.ts (LLMRequestPrep.prepare)
  * whenever the provider id starts with "opencode":
  *
- *   x-opencode-client   flags.client ("tui" for the terminal client)
- *   User-Agent          opencode/<InstallationVersion>
+ *   x-opencode-client   flags.client (official default "cli"; we send "tui",
+ *                       verified accepted live 2026-09-17)
+ *   User-Agent          opencode/<InstallationVersion> (pinned in config.ts:
+ *                       the free tier 426-rejects versions < 1.17.0)
  *   x-opencode-session  input.sessionID  ("ses_" + Identifier.create(descending))
  *   x-opencode-request  input.user.id, the id of the user message being answered
  *                       ("msg_" + Identifier.create(ascending))
+ *
+ * Server-side gates observed live 2026-09-17: a User-Agent version below 1.17.0
+ * draws HTTP 426 UpgradeRequired, and an x-opencode-session that is missing or
+ * not `ses_` + 12 lowercase-hex + 14 base62 draws HTTP 403 FreeTierError
+ * ("can only be used from within OpenCode"). x-opencode-request is not validated.
  *
  * prompt.ts resolves `lastUser` once per turn and passes that same message into
  * every step of the agentic loop, so one user turn — including retries — reuses
@@ -46,7 +53,7 @@ export function createIdentifier(descending: boolean, ts: number = Date.now()): 
 	return id;
 }
 
-/** New session identifier, matching opencode's `SessionID.ascending()` ("ses_" + 26). */
+/** New session identifier, matching opencode's `SessionID.descending()` ("ses_" + 26). */
 export function createSessionId(): string {
 	return `ses_${createIdentifier(true)}`;
 }

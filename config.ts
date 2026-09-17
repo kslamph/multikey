@@ -396,7 +396,11 @@ export function maskKey(key: string): string {
 
 /** OpenCode Zen free tier endpoint that mimics the official OpenCode client. */
 const OPENCODE_ZEN_BASE_URL = "https://opencode.ai/zen/v1";
-const OPENCODE_ZEN_USER_AGENT = "opencode/0.1.50 ai-sdk/openai-compatible/3.0.41";
+// The Zen free tier gates on the client version parsed from User-Agent
+// (HTTP 426 "OpenCode 1.17.0 or newer is required" when too old — seen live
+// 2026-09-17 with 0.1.50). Track the official client's InstallationVersion:
+// packages/opencode/src/session/llm/request.ts sends `opencode/${Version}`.
+const OPENCODE_ZEN_USER_AGENT = "opencode/1.18.31";
 const OPENCODE_ZEN_CLIENT = "tui";
 
 /** True when a baseUrl points at OpenCode Zen (case-insensitive, trailing slash ok). */
