@@ -57,7 +57,7 @@ export const PRESETS: Preset[] = [
 	{
 		id: "b-ai",
 		name: "B.AI",
-		description: "api.b.ai — Hunyuan Hy3, MiMo V2.5, Qwen3.8 (3 models)",
+		description: "api.b.ai — Hunyuan Hy3, MiMo V2.5, Qwen3.8, DeepSeek V4.1 Flash, GLM 5.3 Flash (5 models)",
 		defaultPoolId: "bai",
 		baseUrl: "https://api.b.ai/v1",
 		api: "openai-completions",
@@ -95,6 +95,38 @@ export const PRESETS: Preset[] = [
 				contextWindow: 1_000_000,
 				maxTokens: 131_072,
 				thinkingLevelMap: levels({ off: "none", low: "low", medium: "medium", xhigh: "xhigh" }),
+			},
+			{
+				// b.ai /v1/models lists `deepseek-v4.1-flash` (bare ids only, no
+				// limit fields — verified live 2026-09-21). Sizes from catalog
+				// consensus (models.dev opencode/greenpt rows + the same model
+				// behind cline-free/deepseek-v4.1-flash, verified live 2026-09-17):
+				// ctx 1M, out 384K. Text+image input (models.dev opencode row).
+				// Thinking tiers UNVERIFIED on b.ai: conservative off/high only —
+				// b.ai rejects minimal/xhigh/max with HTTP 400 (seen on mimo-v2.5).
+				// Widen the map after probing with a paid key.
+				id: "deepseek-v4.1-flash",
+				name: "DeepSeek V4.1 Flash",
+				reasoning: true,
+				input: ["text", "image"],
+				contextWindow: 1_000_000,
+				maxTokens: 384_000,
+				thinkingLevelMap: levels({ off: "none", high: "high" }),
+			},
+			{
+				// b.ai /v1/models lists `glm-5.3-flash` (bare ids only — verified
+				// live 2026-09-21). Sizes from catalog consensus (models.dev
+				// zhipuai/zai rows): ctx 1M, out 128K. Upstream inputs
+				// text/image/video/pdf (pi tracks text + image, like mimo-v2.5).
+				// Thinking tiers UNVERIFIED on b.ai: conservative off/high only
+				// (see deepseek-v4.1-flash above). Widen after probing.
+				id: "glm-5.3-flash",
+				name: "GLM 5.3 Flash",
+				reasoning: true,
+				input: ["text", "image"],
+				contextWindow: 1_000_000,
+				maxTokens: 131_072,
+				thinkingLevelMap: levels({ off: "none", high: "high" }),
 			},
 		],
 	},
