@@ -103,7 +103,12 @@ export const PRESETS: Preset[] = [
 		name: "OpenCode Zen",
 		description: "opencode.ai/zen free tier — Big Pickle, MiMo V2.5, Ling 3.0 Fin, Nemotron 3 Ultra/Lightning, Muse Spark 1.3 (6 free models)",
 		defaultPoolId: "zen",
-		baseUrl: "https://opencode.ai/zen/v1",
+		// Inference gateway, not zen/v1: the v2 client's console /api/v2/config
+		// prescribes this as the opencode provider baseURL, and the free lineup
+		// is served here against workspace quota. zen/v1 only has the anonymous
+		// per-IP quota, which datacenter egress IPs exhaust almost immediately
+		// (HTTP 429 FreeUsageLimitError on every request). Verified live 2026-09-21.
+		baseUrl: "https://opencode.ai/inference/openai/v1",
 		api: "openai-completions",
 		keyHint: "https://opencode.ai/auth → sign in → workspace Keys page (one entry per key; multiple keys share the load)",
 		models: [

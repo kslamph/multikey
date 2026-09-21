@@ -2,12 +2,13 @@
  * Client identity headers for endpoints that gate on them.
  *
  * OpenCode Zen — opencode.ai/zen identifies the calling client with four headers,
- * set in packages/opencode/src/session/llm/request.ts (LLMRequestPrep.prepare)
+ * set in packages/core/src/session/model-request.ts (SessionModelRequest.prepare)
  * whenever the provider id starts with "opencode":
  *
- *   x-opencode-client   flags.client (official default "cli"; we send "tui",
- *                       verified accepted live 2026-09-17)
- *   User-Agent          opencode/<InstallationVersion> (pinned in config.ts:
+ *   x-opencode-client   app.name (official prod default "cli" via OPENCODE_CLIENT ??
+ *                       OPENCODE_ARTIFACT; we send "cli")
+ *   User-Agent          App.useragent(app), i.e. opencode/<channel>/<version>/<name>
+ *                       (pinned in config.ts, currently opencode/latest/2.0.11/cli:
  *                       the free tier 426-rejects versions < 1.17.0)
  *   x-opencode-session  input.sessionID  ("ses_" + Identifier.create(descending))
  *   x-opencode-request  input.user.id, the id of the user message being answered

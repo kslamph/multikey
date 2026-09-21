@@ -396,17 +396,34 @@ export function maskKey(key: string): string {
 
 /** OpenCode Zen free tier endpoint that mimics the official OpenCode client. */
 const OPENCODE_ZEN_BASE_URL = "https://opencode.ai/zen/v1";
+/**
+ * Where the v2 client actually sends Zen traffic: the console /api/v2/config
+ * prescribes this as the opencode provider's `settings.baseURL` (verified
+ * live 2026-09-21 — the client's session http.request hook shows POSTs to
+ * this host, never zen/v1). Same free lineup, but served against workspace
+ * quota instead of the anonymous per-IP quota that gates zen/v1.
+ */
+const OPENCODE_INFERENCE_BASE_URL = "https://opencode.ai/inference/openai/v1";
 // The Zen free tier gates on the client version parsed from User-Agent
 // (HTTP 426 "OpenCode 1.17.0 or newer is required" when too old — seen live
-// 2026-09-17 with 0.1.50). Track the official client's InstallationVersion:
-// packages/opencode/src/session/llm/request.ts sends `opencode/${Version}`.
-const OPENCODE_ZEN_USER_AGENT = "opencode/1.18.31";
-const OPENCODE_ZEN_CLIENT = "tui";
+// 2026-09-17 with 0.1.50; no such gate exists in the v2 branch console code,
+// so this is production-server-side only). Track the official v2 client:
+// packages/core/src/session/model-request.ts sends App.useragent(app), i.e.
+// `opencode/<channel>/<version>/<name>`, with name defaulting to "cli"
+// (OPENCODE_CLIENT ?? OPENCODE_ARTIFACT) — see packages/cli/src/version.ts
+// and packages/cli/src/server-process.ts. Channel "latest" observed live on a
+// working install (captured via session http.request hook: the client sends
+// `opencode/latest/2.0.11/cli`). Bump alongside official releases.
+const OPENCODE_ZEN_USER_AGENT = "opencode/latest/2.0.11/cli";
+const OPENCODE_ZEN_CLIENT = "cli";
 
-/** True when a baseUrl points at OpenCode Zen (case-insensitive, trailing slash ok). */
+/** True when a baseUrl points at OpenCode Zen (either the legacy zen/v1 path
+ * or the inference gateway the v2 client actually uses; case-insensitive,
+ * trailing slash ok). */
 export function isOpenCodeZenEndpoint(baseUrl: string | undefined): boolean {
 	if (!baseUrl) return false;
-	return baseUrl.replace(/\/+$/, "").toLowerCase() === OPENCODE_ZEN_BASE_URL;
+	const normalized = baseUrl.replace(/\/+$/, "").toLowerCase();
+	return normalized === OPENCODE_ZEN_BASE_URL || normalized === OPENCODE_INFERENCE_BASE_URL;
 }
 
 /**

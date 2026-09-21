@@ -1,4 +1,4 @@
-import { endpointHeaders, endpointIdentityHeaders } from "./config.ts";
+import { endpointHeaders, endpointIdentityHeaders, isOpenCodeZenEndpoint } from "./config.ts";
 
 /**
  * Endpoint probing: auto-detect the auth header style and fetch the model list.
@@ -141,13 +141,38 @@ export function parseModelsResponse(body: unknown): RemoteModel[] {
 }
 
 /**
+ * Minimal tool stubs that satisfy OpenCode Zen's free-tier client check.
+ *
+ * Verified live 2026-09-21 (see identity.ts notes): the free tier answers
+ * 403 FreeTierError ("can only be used from within OpenCode") to bare,
+ * non-streaming pings — even with a good key — but accepts the same request
+ * once it looks agentic: `stream: true` plus tool definitions carrying
+ * opencode's tool names. Schemas are irrelevant (empty is fine); a single
+ * tool is not. These stubs are never executed — the probe only reads status.
+ */
+const ZEN_PROBE_TOOLS = ["read", "shell", "edit", "write"].map((name) => ({
+	type: "function" as const,
+	function: {
+		name,
+		description: name,
+		parameters: { type: "object" as const, properties: {} },
+	},
+}));
+
+/**
  * Verify a key with a minimal chat completion (a few tokens at most). Returns
  * "ok" when auth was accepted (2xx, or 4xx that clearly got past auth like a
- * bad-model/params 400/404), "rejected" on 401/403, "error" on network trouble.
+ * bad-model/params 400/404 or a quota 429), "rejected" on 401/403, "error"
+ * on network trouble.
  * `onLog` receives the server's rejection body so the TUI can show why.
+ *
+ * On OpenCode Zen the ping carries the agentic shape (streaming + stub tools,
+ * see ZEN_PROBE_TOOLS): without it the free tier 403-rejects even good keys,
+ * which would misreport a working key as rejected.
  */
 async function chatProbe(baseUrl: string, style: AuthStyle, key: string, modelId: string, onLog?: (line: string) => void): Promise<"ok" | "rejected" | "error"> {
 	try {
+		const zenShaped = isOpenCodeZenEndpoint(baseUrl);
 		const response = await fetch(`${trimSlash(baseUrl)}/chat/completions`, {
 			method: "POST",
 			headers: {
@@ -156,7 +181,12 @@ async function chatProbe(baseUrl: string, style: AuthStyle, key: string, modelId
 				...endpointIdentityHeaders(baseUrl),
 				...authHeaders(style, key),
 			},
-			body: JSON.stringify({ model: modelId, max_tokens: 4, messages: [{ role: "user", content: "ping" }] }),
+			body: JSON.stringify({
+				model: modelId,
+				max_tokens: 4,
+				messages: [{ role: "user", content: "ping" }],
+				...(zenShaped ? { tools: ZEN_PROBE_TOOLS, stream: true } : {}),
+			}),
 			signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
 		});
 		if (response.status === 401 || response.status === 403) {

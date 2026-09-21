@@ -5,3 +5,5 @@ package-lock.json
 tsconfig.json
 .pi/
 .zvec-grep/
+# Local-only dev notes (never commit: may contain IPs, key prefixes, org ids)
+*.local.md
