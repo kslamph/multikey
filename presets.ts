@@ -133,7 +133,7 @@ export const PRESETS: Preset[] = [
 	{
 		id: "opencode-zen",
 		name: "OpenCode Zen",
-		description: "opencode.ai/zen free tier — Big Pickle, MiMo V2.5, Ling 3.0 Fin, Nemotron 3 Ultra/Lightning, Muse Spark 1.3 (6 free models)",
+		description: "opencode.ai/zen free tier — Big Pickle, MiMo V2.6 Flash, MiMo V2.5, Ling 3.0 Fin, Nemotron 3 Ultra/Lightning, Muse Spark 1.3 (7 free models)",
 		defaultPoolId: "zen",
 		// Inference gateway, not zen/v1: the v2 client's console /api/v2/config
 		// prescribes this as the opencode provider baseURL, and the free lineup
@@ -156,9 +156,38 @@ export const PRESETS: Preset[] = [
 				compat: ZEN_CHAT_COMPAT,
 			},
 			{
+				// Xiaomi MiMo-V2.6-Flash, released to the Zen free tier 2026-09-22 and
+				// the successor of mimo-v2.5-free (docs opencode.ai/docs/zen lists both,
+				// in that order). Limits are authoritative from console /api/v2/config
+				// `providers.opencode.models` and mirrored exactly by models.dev:
+				// ctx 200,000 / out 32,000, tools on, cost 0. Upstream inputs
+				// text/image/audio/video/pdf (pi tracks text + image, like mimo-v2.5).
+				// Reasoning is always-on with no effort control: models.dev reports
+				// `reasoning: true`, `reasoning_options: []`, `interleaved.field =
+				// reasoning_content`; verified live 2026-09-22 that reasoning_content
+				// streams separately and usage reports reasoning_tokens — so, like the
+				// rest of the free lineup, no thinkingLevelMap.
+				// Verified live 2026-09-22 (agentic probe shape, see probe.ts): streaming
+				// chat with the read/shell/edit/write quartet → 200, content "PONG",
+				// finish stop, usage {prompt 191, completion 13, reasoning 9}; the same
+				// request without tools/stream → 403 FreeTierError, confirming the gate
+				// still applies to this model id.
+				id: "mimo-v2.6-flash-free",
+				name: "MiMo V2.6 Flash Free",
+				reasoning: true,
+				input: ["text", "image"],
+				contextWindow: 200_000,
+				maxTokens: 127_000,
+				compat: ZEN_CHAT_COMPAT,
+			},
+			{
 				// Xiaomi MiMo V2.5 omni; raw model is 1M ctx but the Zen FREE tier serves 200K/32K.
 				// Repo metadata: inputs text/image/audio/video (pi tracks text + image),
 				// reasoning via separate reasoning_content stream, no reasoning_options.
+				// Still listed in opencode.ai/docs/zen's free lineup and still answers 200
+				// (verified live 2026-09-22), but it disappeared from the console
+				// /api/v2/config model map that day when mimo-v2.6-flash-free landed —
+				// kept because it demonstrably works; drop it when it 404s.
 				id: "mimo-v2.5-free",
 				name: "MiMo V2.5 Free",
 				reasoning: true,
