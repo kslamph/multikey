@@ -360,8 +360,8 @@ function normalizePool(pool: PoolConfig): PoolConfig {
 }
 
 /** Convert a pool config into pi ProviderModelConfig-style definitions (provider-level compat merged in). */
-export function toProviderModels(pool: PoolConfig): ProviderModelConfig[] {
-	return pool.models.map(
+export function toProviderModels(pool: PoolConfig, models?: PoolModelConfig[]): ProviderModelConfig[] {
+	return (models ?? pool.models).map(
 		(m): ProviderModelConfig => ({
 			id: m.id,
 			name: m.name ?? m.id,

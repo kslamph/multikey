@@ -54,8 +54,8 @@ interface CapturedResponse {
 export type Notifier = (message: string) => void;
 
 export function createRotatingStreamSimple(pool: KeyPool, apiName: string, notify: Notifier, onConfigDirty?: () => void) {
-	const impl = getApiProvider(apiName as Api);
-	if (!impl) throw new Error(`multikey: no API provider registered for api: ${apiName}`);
+	const fallback = getApiProvider(apiName as Api);
+	if (!fallback) throw new Error(`multikey: no API provider registered for api: ${apiName}`);
 	// Auth style: "api-key" providers want the key in x-api-key (some reject
 	// Authorization entirely); bearer is the pi-ai default and needs no help.
 	const authStyle = pool.config.auth ?? "bearer";
@@ -108,6 +108,15 @@ export function createRotatingStreamSimple(pool: KeyPool, apiName: string, notif
 
 				try {
 					const captured: CapturedResponse = { status: 0 };
+					// Transport follows the MODEL, not the pool: pi dispatches to a
+					// provider's custom streamSimple only when model.api matches the
+					// registered api (provider-composer.js), so a pool mixing
+					// transports (e.g. oc.zen's openai-responses muse-spark entry)
+					// must resolve the impl per request. Anything without a match
+					// falls back to the pool-level api. Verified live 2026-09-21:
+					// without this, muse-spark bypassed rotation (dummy key, no
+					// ses_/msg_ identity headers) and drew 403 FreeTierError.
+					const impl = getApiProvider(model.api) ?? fallback;
 					// Identity headers (session / request) are per-request, so they are
 					// merged here rather than baked into the provider registration.
 					// Providers apply options.headers last, so these win over the static

@@ -11,7 +11,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getApiProvider, type Api } from "@earendil-works/pi-ai";
-import { configPath, endpointHeaders, loadConfig, saveConfig, toProviderModels, type KeypoolConfig, type PoolConfig } from "./config.ts";
+import { configPath, endpointHeaders, loadConfig, saveConfig, toProviderModels, type KeypoolConfig, type PoolConfig, type PoolModelConfig } from "./config.ts";
 import { resetConversation } from "./identity.ts";
 import { KeyPool } from "./pool.ts";
 import { createRotatingStreamSimple } from "./stream.ts";
@@ -36,6 +36,8 @@ export default function multikey(pi: ExtensionAPI) {
 
 	const pools = new Map<string, KeyPool>();
 	for (const pool of config.pools) pools.set(pool.id, new KeyPool(pool));
+	/** pi provider ids registered per pool (pool.id plus one suffixed id per extra transport). */
+	const providerIds = new Map<string, string[]>();
 
 	let ui: ExtensionContext["ui"] | undefined;
 	const notify = (message: string) => {
@@ -47,33 +49,68 @@ export default function multikey(pi: ExtensionAPI) {
 	};
 
 	/**
-	 * Register a pool as a pi provider. Returns undefined on success, or a
+	 * Register a pool as pi provider(s). Returns undefined on success, or a
 	 * human-readable reason why the pool was skipped (unknown api, incomplete).
+	 *
+	 * One pi provider per transport: pi dispatches to a provider's custom
+	 * streamSimple only when model.api matches the registered api
+	 * (provider-composer.js), so models on another transport would bypass key
+	 * rotation and per-request identity headers entirely — on OpenCode Zen
+	 * that draws 403 FreeTierError (verified live 2026-09-21: muse-spark went
+	 * out with the dummy key and a uuid session). Extra transports register
+	 * under "<pool.id>.<api>" sharing the same KeyPool, so keys are entered
+	 * once and rotation/cooldowns span both providers.
 	 */
 	function registerPool(pool: PoolConfig): string | undefined {
 		if (pool.keys.length === 0 || pool.models.length === 0) {
 			return pool.keys.length === 0 ? "no API keys" : "no models";
 		}
-		const api = pool.api ?? "openai-completions";
-		if (!getApiProvider(api as Api)) {
-			// Never throw at startup over a bad api value; report it instead so
-			// the user gets a fix hint (and /multikey marks the pool broken).
-			return `unknown api type "${api}" (edit the pool and pick a valid API type)`;
+		const defaultApi = pool.api ?? "openai-completions";
+		const groups = new Map<string, PoolModelConfig[]>();
+		for (const m of pool.models) {
+			const api = m.api ?? defaultApi;
+			const list = groups.get(api);
+			if (list) list.push(m);
+			else groups.set(api, [m]);
+		}
+		for (const api of groups.keys()) {
+			if (!getApiProvider(api as Api)) {
+				// Never throw at startup over a bad api value; report it instead so
+				// the user gets a fix hint (and /multikey marks the pool broken).
+				return `unknown api type "${api}" (edit the pool and pick a valid API type)`;
+			}
 		}
 		const keyPool = pools.get(pool.id) ?? new KeyPool(pool);
 		keyPool.updateConfig(pool);
 		pools.set(pool.id, keyPool);
 
-		pi.registerProvider(pool.id, {
-			name: pool.name ?? pool.id,
-			baseUrl: pool.baseUrl,
-			// Real keys are injected per-request by the rotating stream function.
-			apiKey: "multikey-managed",
-			api,
-			headers: { ...pool.headers, ...endpointHeaders(pool.baseUrl) },
-			models: toProviderModels(pool),
-			streamSimple: createRotatingStreamSimple(keyPool, api, notify, () => saveConfig(config)),
-		});
+		const wanted: string[] = [];
+		for (const [api, models] of groups) {
+			const providerId = api === defaultApi ? pool.id : `${pool.id}.${api}`;
+			wanted.push(providerId);
+			pi.registerProvider(providerId, {
+				name: api === defaultApi ? (pool.name ?? pool.id) : `${pool.name ?? pool.id} (${api})`,
+				baseUrl: pool.baseUrl,
+				// Real keys are injected per-request by the rotating stream function.
+				apiKey: "multikey-managed",
+				api,
+				headers: { ...pool.headers, ...endpointHeaders(pool.baseUrl) },
+				models: toProviderModels(pool, models),
+				streamSimple: createRotatingStreamSimple(keyPool, api, notify, () => saveConfig(config)),
+			});
+		}
+		// Drop split providers left over from a previous registration whose
+		// models have since moved transports (or back to a single provider).
+		for (const stale of providerIds.get(pool.id) ?? []) {
+			if (!wanted.includes(stale)) {
+				try {
+					pi.unregisterProvider(stale);
+				} catch {
+					// Already gone.
+				}
+			}
+		}
+		providerIds.set(pool.id, wanted);
 		return undefined;
 	}
 
@@ -98,11 +135,14 @@ export default function multikey(pi: ExtensionAPI) {
 		config.pools = config.pools.filter((p) => p.id !== poolId);
 		pools.delete(poolId);
 		saveConfig(config);
-		try {
-			pi.unregisterProvider(poolId);
-		} catch {
-			// Not registered yet.
+		for (const providerId of [poolId, ...(providerIds.get(poolId) ?? [])]) {
+			try {
+				pi.unregisterProvider(providerId);
+			} catch {
+				// Not registered yet.
+			}
 		}
+		providerIds.delete(poolId);
 	}
 
 	function reloadFromDisk() {
