@@ -42,6 +42,7 @@ DeepSeek / Tencent / 小米官方文档，并对每个 thinking 档位做过实�
 | mimo-v2.5 | 1M / 128K | text+image | off · high（官方：low/medium/high 行为相同） |
 | qwen3.8-flash | 1M / 131K | text+image | off · low · medium · xhigh |
 | deepseek-v4.1-flash | 1M / 384K | text+image | off · low · high · max（官方 DeepSeek V4 档位；b.ai 已于 2026-09-25 实测） |
+| glm-5.3-flash | 1M / 131K | text+image | low · high · max（无 off——GLM 始终思考；b.ai 已于 2026-09-25 实测） |
 
 > 为什么必须显式写 `null`：pi 的 `getSupportedThinkingLevels` 把 `mapped === null`
 > 视为不支持并隐藏该档，但**省略**会被当作支持并把档名原样发给 API；

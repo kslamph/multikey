@@ -122,16 +122,21 @@ export const PRESETS: Preset[] = [
 				// live 2026-09-21). Sizes from catalog consensus (models.dev
 				// zhipuai/zai rows): ctx 1M, out 128K. Upstream inputs
 				// text/image/video/pdf (pi tracks text + image, like mimo-v2.5).
-				// Thinking tiers UNVERIFIED on b.ai: conservative off/high only
-				// (deepseek-v4.1-flash was verified and widened 2026-09-25 — probe this
-				// model the same way before widening).
+				// Thinking tiers probed live on b.ai 2026-09-25 (paid key, exact pi
+				// request shape): low/high/max accepted and behaviorally distinct
+				// (completion 153/257/434 tok on a fixed prompt). medium/minimal are
+				// REJECTED (HTTP 400), and thinking:{type:"disabled"} (what pi sends
+				// for off) also 400s — so off stays hidden: GLM always thinks, with
+				// the plain no-param request defaulting to deep reasoning (verified
+				// 200). xhigh is accepted with ≈max-like depth on a single sample but
+				// upstream GLM 5.3 Flash declares no xhigh tier — hidden for now.
 				id: "glm-5.3-flash",
 				name: "GLM 5.3 Flash",
 				reasoning: true,
 				input: ["text", "image"],
 				contextWindow: 1_000_000,
 				maxTokens: 131_072,
-				thinkingLevelMap: levels({ off: "none", high: "high" }),
+				thinkingLevelMap: levels({ off: null, low: "low", high: "high", max: "max" }),
 			},
 		],
 	},
