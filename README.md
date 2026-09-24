@@ -40,6 +40,7 @@ Built-in presets decouple "model settings" from "keys". The data comes from b.ai
 | hy3 | 256K / 128K | text | off · low · high |
 | mimo-v2.5 | 1M / 128K | text+image | off · high (official: low/medium/high behave identically) |
 | qwen3.8-flash | 1M / 131K | text+image | off · low · medium · xhigh |
+| deepseek-v4.1-flash | 1M / 384K | text+image | off · low · high · max (official DeepSeek V4 tiers; b.ai probed live 2026-09-25) |
 
 > Why `null` must be explicit: pi's `getSupportedThinkingLevels` treats `mapped === null` as unsupported and hides that level, but **omitting** it is treated as supported and the level name is sent to the API verbatim; `xhigh` / `max` additionally require an explicit non-null value to be usable.
 

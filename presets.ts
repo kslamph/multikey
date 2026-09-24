@@ -102,16 +102,20 @@ export const PRESETS: Preset[] = [
 				// consensus (models.dev opencode/greenpt rows + the same model
 				// behind cline-free/deepseek-v4.1-flash, verified live 2026-09-17):
 				// ctx 1M, out 384K. Text+image input (models.dev opencode row).
-				// Thinking tiers UNVERIFIED on b.ai: conservative off/high only —
-				// b.ai rejects minimal/xhigh/max with HTTP 400 (seen on mimo-v2.5).
-				// Widen the map after probing with a paid key.
+				// Thinking tiers probed live on b.ai 2026-09-25 (paid key, exact pi
+				// request shape: thinking.enabled + reasoning_effort): every level is
+				// accepted — the mimo-v2.5-style HTTP 400 for minimal/xhigh/max does
+				// NOT apply to this model. DeepSeek official exposes only
+				// low/high/max, and low vs high are behaviorally distinct in reasoning
+				// length, so minimal/medium/xhigh stay hidden (b.ai accepts them but
+				// treats them as duplicates).
 				id: "deepseek-v4.1-flash",
 				name: "DeepSeek V4.1 Flash",
 				reasoning: true,
 				input: ["text", "image"],
 				contextWindow: 1_000_000,
 				maxTokens: 384_000,
-				thinkingLevelMap: levels({ off: "none", high: "high" }),
+				thinkingLevelMap: levels({ off: "none", low: "low", high: "high", max: "max" }),
 			},
 			{
 				// b.ai /v1/models lists `glm-5.3-flash` (bare ids only — verified
@@ -119,7 +123,8 @@ export const PRESETS: Preset[] = [
 				// zhipuai/zai rows): ctx 1M, out 128K. Upstream inputs
 				// text/image/video/pdf (pi tracks text + image, like mimo-v2.5).
 				// Thinking tiers UNVERIFIED on b.ai: conservative off/high only
-				// (see deepseek-v4.1-flash above). Widen after probing.
+				// (deepseek-v4.1-flash was verified and widened 2026-09-25 — probe this
+				// model the same way before widening).
 				id: "glm-5.3-flash",
 				name: "GLM 5.3 Flash",
 				reasoning: true,
@@ -276,6 +281,7 @@ export const PRESETS: Preset[] = [
 				// (deepseek/deepseek-v4.1-flash) is usage-billed — see the comment above.
 				// Catalog (openrouter): ctx 1048576, out 384000 (both verified live), text+image.
 				// Effort tiers verified live via reasoning:{effort} (incl. "none" = reasoning off).
+				// DeepSeek official tiers are only low/high/max, so minimal/medium/xhigh stay hidden.
 				id: "cline-free/deepseek-v4.1-flash",
 				name: "DeepSeek V4.1 Flash (Free)",
 				reasoning: true,
@@ -283,7 +289,7 @@ export const PRESETS: Preset[] = [
 				contextWindow: 1_048_576,
 				maxTokens: 384_000,
 				compat: { thinkingFormat: "openrouter" },
-				thinkingLevelMap: levels({ off: "none", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" }),
+				thinkingLevelMap: levels({ off: "none", low: "low", high: "high", max: "max" }),
 			},
 			{
 				// Free at its raw id (no cline-free/ prefix in the feed); 262K window measured
