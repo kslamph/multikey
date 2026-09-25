@@ -264,7 +264,7 @@ export const PRESETS: Preset[] = [
 		id: "cline-free",
 		name: "Cline Free",
 		description:
-			"api.cline.bot — Cline account free tier: DeepSeek V4.1 Flash, Laguna S 2.1, GLM 5.3, Solar Pro 4, Muse Spark 1.3, Space Bunny Alpha, MiMo V2.6 Flash (daily per-model quota, lineup rotates)",
+			"api.cline.bot — Cline account free tier: DeepSeek V4.1 Flash, Laguna S 2.1, GLM 5.3, Solar Pro 4, Muse Spark 1.3, Space Bunny Alpha, MiMo V2.6 Flash, Gemini 3.8 Flash (daily per-model quota, lineup rotates)",
 		defaultPoolId: "cline",
 		baseUrl: "https://api.cline.bot/api/v1",
 		api: "openai-completions",
@@ -377,6 +377,31 @@ export const PRESETS: Preset[] = [
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				contextWindow: 1_048_576,
 				maxTokens: 128_000,
+			},
+			{
+				// Feed id: cline-free/gemini-3.8-flash — top of the recommended-models
+				// `free` bucket ("Google's most intelligent Flash model", verified live
+				// 2026-09-25). The raw google/ id is usage-billed: it answers 402
+				// insufficient_credits on a zero-balance account while the cline-free/
+				// id rides the daily per-model quota ($0; the gateway `cost` metadata
+				// on free-route responses is market price, not billing).
+				// Catalog (cline google provider): ctx 1048576, out 65536; upstream
+				// inputs text/image/video/audio/pdf (pi tracks text + image).
+				// Thinking is ALWAYS ON on this route — ~300 reasoning_tokens even
+				// with no reasoning param, and effort=none still thinks — so off is
+				// hidden (null). Verified live 2026-09-25 via reasoning:{effort}:
+				// low/medium/high accepted; low is distinct (zero reasoning tokens).
+				// minimal/xhigh/max are accepted but indistinguishable from the
+				// default depth → hidden.
+				id: "cline-free/gemini-3.8-flash",
+				name: "Gemini 3.8 Flash (Free)",
+				reasoning: true,
+				input: ["text", "image"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1_048_576,
+				maxTokens: 65_536,
+				compat: { thinkingFormat: "openrouter" },
+				thinkingLevelMap: levels({ low: "low", medium: "medium", high: "high" }),
 			},
 		],
 	},
