@@ -264,7 +264,7 @@ export const PRESETS: Preset[] = [
 		id: "cline-free",
 		name: "Cline Free",
 		description:
-			"api.cline.bot — Cline account free tier: DeepSeek V4.1 Flash, Laguna S 2.1, GLM 5.3, Solar Pro 4, Muse Spark 1.3, Union Alpha (daily per-model quota, lineup rotates)",
+			"api.cline.bot — Cline account free tier: DeepSeek V4.1 Flash, Laguna S 2.1, GLM 5.3, Solar Pro 4, Muse Spark 1.3, Space Bunny Alpha, MiMo V2.6 Flash (daily per-model quota, lineup rotates)",
 		defaultPoolId: "cline",
 		baseUrl: "https://api.cline.bot/api/v1",
 		api: "openai-completions",
@@ -350,15 +350,33 @@ export const PRESETS: Preset[] = [
 				thinkingLevelMap: levels({ minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" }),
 			},
 			{
-				// Stealth promo model; free at its raw id (no cline-free/ prefix in the feed).
-				// Not in any catalog (stealth) — sizes/reasoning copied from the live pool,
-				// unverified.
-				id: "stealth/union-alpha",
-				name: "Union Alpha",
+				// stealth/union-alpha retired from the Cline lineup (removed 2026-09-25 by the
+				// pool owner; superseded by the two entries below).
+				// Stealth promo model, free at its raw feed id (stealth/ prefix, no
+				// cline-free/ namespace). Not in any catalog (stealth) — sizes copied
+				// from the working live pool (2026-09-25), unverified. Always-on
+				// reasoning, no effort tiers.
+				id: "stealth/space-bunny-alpha",
+				name: "stealth/space-bunny-alpha",
 				reasoning: true,
 				input: ["text"],
-				contextWindow: 262_000,
-				maxTokens: 16_384,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1_000_000,
+				maxTokens: 32_768,
+			},
+			{
+				// Feed id: cline-free/mimo-v2.6-flash (raw xiaomi/mimo-v2.6-flash is
+				// usage-billed — same cline-free/ namespace rule as deepseek above).
+				// MiMo V2.6 Flash on the Cline free tier; working in the live pool
+				// 2026-09-25. Sizes from the live pool. Always-on reasoning, no effort
+				// tiers; vision input.
+				id: "cline-free/mimo-v2.6-flash",
+				name: "xiaomi/mimo-v2.6-flash",
+				reasoning: true,
+				input: ["text", "image"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1_048_576,
+				maxTokens: 128_000,
 			},
 		],
 	},
