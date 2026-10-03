@@ -8,16 +8,19 @@
  *   x-opencode-client   app.name (official prod default "cli" via OPENCODE_CLIENT ??
  *                       OPENCODE_ARTIFACT; we send "cli")
  *   User-Agent          App.useragent(app), i.e. opencode/<channel>/<version>/<name>
- *                       (pinned in config.ts, currently opencode/latest/2.0.11/cli:
- *                       the free tier 426-rejects versions < 1.17.0)
+ *                       (the version is resolved live from the official update
+ *                       service in zen-contract.ts; the free tier 426-rejects
+ *                       versions below its moving floor)
  *   x-opencode-session  input.sessionID  ("ses_" + Identifier.create(descending))
  *   x-opencode-request  input.user.id, the id of the user message being answered
  *                       ("msg_" + Identifier.create(ascending))
  *
  * Server-side gates observed live 2026-09-17: a User-Agent version below 1.17.0
- * draws HTTP 426 UpgradeRequired, and an x-opencode-session that is missing or
- * not `ses_` + 12 lowercase-hex + 14 base62 draws HTTP 403 FreeTierError
- * ("can only be used from within OpenCode"). x-opencode-request is not validated.
+ * draws HTTP 426 UpgradeRequired (that floor moves with every official release —
+ * the version itself is resolved live in zen-contract.ts), and an
+ * x-opencode-session that is missing or not `ses_` + 12 lowercase-hex +
+ * 14 base62 draws HTTP 403 FreeTierError ("can only be used from within
+ * OpenCode"). x-opencode-request is not validated.
  *
  * prompt.ts resolves `lastUser` once per turn and passes that same message into
  * every step of the agentic loop, so one user turn — including retries — reuses
@@ -25,13 +28,16 @@
  * stream function (UserMessage is just { role, content, timestamp }), so we mint
  * ids in the same format and keep them alive for the same span opencode would.
  *
- * Cline — api.cline.bot correlates a conversation with `X-Task-ID`, a v4 uuid.
+ * Cline — api.cline.bot correlates a conversation with `X-Task-ID`, a v4 uuid,
+ * and takes the credential only as `Authorization: Bearer <token>` (x-api-key
+ * is rejected, verified live). Pasted static keys are bearer tokens as-is; only
+ * OAuth access tokens carry the required `workos:` prefix (cline-auth.ts).
  */
 
 import { createHash, randomBytes } from "node:crypto";
 
 /** Alphabet used by opencode's Identifier.create (packages/schema/src/identifier.ts). */
-const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+const ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 /**
  * Port of opencode's Identifier.create(): a sortable, KSUID-like 26-char suffix.

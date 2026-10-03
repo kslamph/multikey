@@ -1,4 +1,4 @@
-import { endpointHeaders, endpointIdentityHeaders, isOpenCodeZenEndpoint } from "./config.ts";
+import { endpointHeaders, endpointIdentityHeaders, isClineEndpoint, isOpenCodeZenEndpoint } from "./config.ts";
 
 /**
  * Endpoint probing: auto-detect the auth header style and fetch the model list.
@@ -11,6 +11,10 @@ import { endpointHeaders, endpointIdentityHeaders, isOpenCodeZenEndpoint } from 
  *      the detected style; 401/403 there rotates to the other style.
  *   3. If even the chat probe accepts a bogus key, the endpoint simply doesn't
  *      check keys — we proceed with the default (bearer) and say so.
+ *
+ * Exception: Cline's api.cline.bot rejects `x-api-key` outright (verified live),
+ * so a Cline baseUrl is probed with Bearer only rather than burning two doomed
+ * round trips per URL candidate.
  *
  * Everything degrades gracefully: probe failures never block pool creation,
  * they only downgrade to manual model entry.
@@ -216,7 +220,13 @@ export async function probeEndpoint(
 		log.push(line);
 		options?.onLog?.(line);
 	};
-	const styles: AuthStyle[] = options?.authHint === "api-key" ? ["api-key", "bearer"] : ["bearer", "api-key"];
+	// Cline accepts the key only as `Authorization: Bearer <token>`; offering
+	// x-api-key there just draws a 401 per candidate URL.
+	const styles: AuthStyle[] = isClineEndpoint(baseUrl)
+		? ["bearer"]
+		: options?.authHint === "api-key"
+			? ["api-key", "bearer"]
+			: ["bearer", "api-key"];
 
 	// --- 1. Fetch the model list, rotating auth styles on 401/403. ---
 	let models: RemoteModel[] | undefined;

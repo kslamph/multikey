@@ -62,7 +62,7 @@ DeepSeek / Tencent / 小米官方文档，并对每个 thinking 档位做过实�
       "name": "B.AI (Key Pool)",
       "baseUrl": "https://api.b.ai/v1",
       "api": "openai-completions",
-      "auth": "bearer",                       // 可选："bearer"（默认）或 "api-key"（x-api-key 头）
+      "auth": "bearer",                       // 可选："bearer"（默认）或 "api-key"（x-api-key 头；api.cline.bot 会拒绝该头，故忽略）
       "compat": { ... },                    // provider 级默认，合并进每个模型
       "cooldownMs": 20000,                  // 429 冷却
       "invalidKeyCooldownMs": 600000,       // 401/403 冷却
@@ -83,7 +83,7 @@ JSON 后 `Reload config from disk`。
 
 自定义向导只问最基本的三项：**provider id、Base URL、key**。随后自动探测端点：
 
-1. 用 `Authorization: Bearer` 请求 `<baseUrl>/models`（会自动尝试 `<baseUrl>/v1/models`），若返回 401/403 再换 `x-api-key` 重试。
+1. 用 `Authorization: Bearer` 请求 `<baseUrl>/models`（会自动尝试 `<baseUrl>/v1/models`），若返回 401/403 再换 `x-api-key` 重试。`api.cline.bot` 例外：它拒绝 `x-api-key`，只接受 `Authorization: Bearer <token>`，因此 Cline 端点仅用 Bearer 探测。
 2. 有些网关的 `/models` 是公开的，因此还会发一个 1 token 的迷你 chat 请求验证 key。若两种头都被拒但假 key 能通过，说明是免鉴权的开放端点，按默认 Bearer 保存。
 3. 直接从服务端返回的模型列表中**多选**要添加的模型。元数据里的上下文长度 / 输入模态 / 最大输出会被采用，其余一律安全默认值（128k 上下文、text 输入、16k 最大输出、成本 0）。
 4. 可选：逐模型微调常用参数（上下文、输入模态、最大输出），或跳过以后在 Models 菜单里改。高级字段（thinking 映射、compat、cost）直接编辑 `multikey.json` 后 `Reload config from disk`。

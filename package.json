@@ -1,6 +1,6 @@
 {
 	"name": "pi-multikey",
-	"version": "1.17.0",
+	"version": "1.18.0",
 	"description": "One pi provider backed by many API keys: automatic 429 rotation, per-request key leases for concurrent subagents, and a /multikey management TUI",
 	"keywords": [
 		"pi-package",
@@ -35,6 +35,7 @@
 		"stream.ts",
 		"manage.ts",
 		"tui.ts",
+		"zen-contract.ts",
 		"README.md",
 		"README.zh.md",
 		"LICENSE"
@@ -43,6 +44,9 @@
 		"@earendil-works/pi-ai": "*",
 		"@earendil-works/pi-coding-agent": "*",
 		"@earendil-works/pi-tui": "*"
+	},
+	"scripts": {
+		"test": "node --test *.test.ts"
 	},
 	"pi": {
 		"extensions": [

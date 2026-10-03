@@ -12,6 +12,7 @@ import { dirname, join } from "node:path";
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import type { AuthStyle } from "./probe.ts";
 import { currentRequestId, currentSessionId, currentTaskId, turnKeyOf } from "./identity.ts";
+import { zenClientHeadersSync } from "./zen-contract.ts";
 
 /** Safe model defaults applied when a spec doesn't say otherwise (edit in multikey.json). */
 export const DEFAULT_CONTEXT_WINDOW = 128_000;
@@ -407,15 +408,14 @@ const OPENCODE_INFERENCE_BASE_URL = "https://opencode.ai/inference/openai/v1";
 // The Zen free tier gates on the client version parsed from User-Agent
 // (HTTP 426 "OpenCode 1.17.0 or newer is required" when too old — seen live
 // 2026-09-17 with 0.1.50; no such gate exists in the v2 branch console code,
-// so this is production-server-side only). Track the official v2 client:
-// packages/core/src/session/model-request.ts sends App.useragent(app), i.e.
-// `opencode/<channel>/<version>/<name>`, with name defaulting to "cli"
-// (OPENCODE_CLIENT ?? OPENCODE_ARTIFACT) — see packages/cli/src/version.ts
-// and packages/cli/src/server-process.ts. Channel "latest" observed live on a
-// working install (captured via session http.request hook: the client sends
-// `opencode/latest/2.0.11/cli`). Bump alongside official releases.
-const OPENCODE_ZEN_USER_AGENT = "opencode/latest/2.0.11/cli";
-const OPENCODE_ZEN_CLIENT = "cli";
+// so this is production-server-side only). The floor moves with every official
+// release, so the version is NOT pinned here: zen-contract.ts reads it from the
+// official update service (packages/core/src/session/model-request.ts sends
+// App.useragent(app), i.e. `opencode/<channel>/<version>/<name>`, with channel
+// "latest" and name defaulting to "cli" — see packages/cli/src/version.ts and
+// packages/cli/src/server-process.ts) and falls back to a baked-in,
+// live-verified snapshot, rejecting any resolved version older than that
+// snapshot (a stale User-Agent draws 426, so it is never sent on purpose).
 
 /** True when a baseUrl points at OpenCode Zen (either the legacy zen/v1 path
  * or the inference gateway the v2 client actually uses; case-insensitive,
@@ -438,7 +438,11 @@ export function isOpenCodeZenEndpoint(baseUrl: string | undefined): boolean {
 export function endpointHeaders(baseUrl: string): Record<string, string> {
 	if (isClineEndpoint(baseUrl)) return clineClientHeaders();
 	if (!isOpenCodeZenEndpoint(baseUrl)) return {};
-	return { "x-opencode-client": OPENCODE_ZEN_CLIENT, "User-Agent": OPENCODE_ZEN_USER_AGENT };
+	// Synchronous by contract (provider registration needs it): returns the
+	// cached Zen client headers and schedules a background version refresh when
+	// the cache has aged out. stream.ts re-reads it per request, so a refresh
+	// that lands mid-session applies without a reload.
+	return zenClientHeadersSync();
 }
 
 /**
@@ -467,18 +471,18 @@ const CLINE_API_BASE_URL = "https://api.cline.bot";
 /**
  * Header set the official Cline CLI sends to api.cline.bot (mirrors
  * cline sdk request-headers.ts buildClineRequestHeaders with source "cli").
- * The values track the cline repo versions: CLI 3.0.61, SDK core 0.0.82.
+ * The values track the cline repo versions: CLI 3.0.65, SDK core 0.0.86.
  */
 const CLINE_CLIENT_HEADERS: Record<string, string> = {
 	"HTTP-Referer": "https://cline.bot",
 	"X-Title": "Cline",
 	"X-IS-MULTIROOT": "false",
 	"X-CLIENT-TYPE": "cline-cli",
-	"User-Agent": "Cline/3.0.61",
-	"X-CLIENT-VERSION": "3.0.61",
+	"User-Agent": "Cline/3.0.65",
+	"X-CLIENT-VERSION": "3.0.65",
 	"X-PLATFORM": "cli",
-	"X-PLATFORM-VERSION": "3.0.61",
-	"X-CORE-VERSION": "0.0.82",
+	"X-PLATFORM-VERSION": "3.0.65",
+	"X-CORE-VERSION": "0.0.86",
 };
 
 function clineClientHeaders(): Record<string, string> {

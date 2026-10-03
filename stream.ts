@@ -22,8 +22,9 @@ import {
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import type { KeyOutcome, KeyPool, Lease } from "./pool.ts";
-import { endpointIdentityHeaders, isClineEndpoint } from "./config.ts";
+import { endpointIdentityHeaders, isClineEndpoint, isOpenCodeZenEndpoint } from "./config.ts";
 import { ensureClineAccessToken, formatClineAccessToken } from "./cline-auth.ts";
+import { zenClientHeadersSync } from "./zen-contract.ts";
 
 const RATE_LIMIT_RE = /\b429\b|rate\s*limit|too many requests|quota\s*(exceed|limit)|requests per minute|requests per day/i;
 const INVALID_KEY_RE = /\b40[13]\b|unauthorized|forbidden|invalid\s*(api\s*)?key|incorrect\s*(api\s*)?key|authentication/i;
@@ -58,6 +59,9 @@ export function createRotatingStreamSimple(pool: KeyPool, apiName: string, notif
 	if (!fallback) throw new Error(`multikey: no API provider registered for api: ${apiName}`);
 	// Auth style: "api-key" providers want the key in x-api-key (some reject
 	// Authorization entirely); bearer is the pi-ai default and needs no help.
+	// Cline's endpoint is the exception: it rejects x-api-key (verified live) and
+	// accepts the key only as `Authorization: Bearer <token>`, so an "api-key"
+	// pool pointed at api.cline.bot still goes out as Bearer.
 	const authStyle = pool.config.auth ?? "bearer";
 
 	return function rotatingStreamSimple(
@@ -102,8 +106,11 @@ export function createRotatingStreamSimple(pool: KeyPool, apiName: string, notif
 						);
 					}
 				} else if (isClineEndpoint(pool.config.baseUrl)) {
-					// Static (pasted) key on the Cline endpoint: same prefix rule applies.
-					apiKey = formatClineAccessToken(apiKey);
+					// Static (pasted) key on the Cline endpoint: sent verbatim as a
+					// bearer token. The "workos:" prefix belongs to OAuth access tokens
+					// only — a pasted token from ~/.cline/data/secrets.json is already a
+					// bearer token, and prefixing it draws a 401.
+					apiKey = apiKey.trim();
 				}
 
 				try {
@@ -123,13 +130,19 @@ export function createRotatingStreamSimple(pool: KeyPool, apiName: string, notif
 					// pool headers. The message list keys the request id to the current
 					// turn, so retries of one turn share it like opencode's lastUser does.
 					const identityBaseUrl = model.baseUrl || pool.config.baseUrl;
+					// Cline rejects x-api-key, so that header is suppressed there and
+					// the key rides Authorization alone.
+					const wantsApiKeyHeader = authStyle === "api-key" && !isClineEndpoint(identityBaseUrl);
 					const attemptOptions: SimpleStreamOptions = {
 						...options,
 						apiKey,
 						headers: {
 							...options?.headers,
 							...endpointIdentityHeaders(identityBaseUrl, context.messages),
-							...(authStyle === "api-key" ? { "x-api-key": apiKey } : {}),
+							// Zen's client identity carries the live CLI version; re-read
+							// per request so a background refresh applies without a reload.
+							...(isOpenCodeZenEndpoint(identityBaseUrl) ? zenClientHeadersSync() : {}),
+							...(wantsApiKeyHeader ? { "x-api-key": apiKey } : {}),
 						},
 						onResponse: (response) => {
 							captured.status = response.status;

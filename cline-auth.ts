@@ -38,7 +38,7 @@ export const REFRESH_BUFFER_MS = 5 * 60_000;
 
 /** Headers sent to Cline API auth endpoints (same client identity as chat requests). */
 function clineAuthHeaders(): Record<string, string> {
-	return { "Content-Type": "application/json", "User-Agent": "Cline/3.0.61" };
+	return { "Content-Type": "application/json", "User-Agent": "Cline/3.0.65" };
 }
 
 export interface ClineTokenUpdate {
