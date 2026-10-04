@@ -1,126 +1,147 @@
 # pi-multikey
 
+One Pi provider backed by many API keys: every in-flight request leases a key,
+and 429/401/403 rotates to the next one with a cooldown.
+
 [中文](./README.zh.md)
 
-A pi extension that bundles multiple API keys into a single **key pool**, exposing only **one provider** to pi.
+## What's included
 
-It solves three pain points:
+| Extension | Command / shortcut | What it does |
+|---|---|---|
+| `index.ts` | `/multikey` | Management TUI: live per-key status, add/edit/delete pools, keys, models, endpoints and cooldowns, preset sync, reload from disk |
+| `index.ts` | — | Registers one Pi provider per pool (for example `bai`); models are used as `<pool-id>/<model-id>` and each request holds a key lease (fewest in-flight, then least recently used) |
+| `index.ts` | — | On `session_start`, reports pools that failed to register and the first-run config result, and offers preset updates |
 
-1. **No more copying your provider config per key** — models (contextWindow / modalities / thinkingLevelMap / compat) are configured once; swapping or adding keys never touches the model definitions.
-2. **Automatic 429 key rotation** — on a failed request it immediately retries with the next key, and the failed key goes into cooldown (honoring `retry-after`). No manual provider switching.
-3. **Concurrent subagents share keys automatically** — every in-flight request holds a key lease, picked by "fewest in use + least recently used", so when the main agent spawns multiple subagents they naturally land on different keys.
+No keybindings, model-callable tools, or CLI flags are registered.
 
-## Installation
+## Install
 
 ```bash
-# Option 1: git (recommended, no npm account needed)
-pi install git:github.com/kslamph/multikey@v1.2.0
-
-# Option 2: npm
 pi install npm:pi-multikey
-
-# Option 3: local directory
-pi install /path/to/multikey
+pi install git:github.com/kslamph/multikey@v1.19.0
+pi install ./path/to/checkout   # local checkout, loaded in place
 ```
 
-## Quick start (B.AI preset)
+Try it without installing (loads for one invocation, adds nothing to settings):
+
+```bash
+pi -e npm:pi-multikey
+```
+
+Pi package basics: <https://pi.dev/docs>.
+
+## Usage
+
+Start from a preset — endpoint, compat and model specs are preconfigured, you
+only paste keys:
 
 ```
-/multikey → Add pool… → Preset: B.AI → paste keys one per line (blank line to finish)
+/multikey → Add pool… → Preset: B.AI → paste keys, one per line (blank to finish)
 ```
 
-After picking the preset, the endpoint, compat, and all 3 model definitions are wired up automatically. Models are available directly as `bai/<model-id>`, e.g. `bai/hy3`.
+Models are then available as `bai/<model-id>`, e.g. `bai/hy3`. Built-in presets:
 
-## Presets
+- **B.AI** — 5 models (Hunyuan Hy3, MiMo V2.5, Qwen3.8 Flash, DeepSeek V4.1 Flash, GLM 5.3 Flash).
+- **OpenCode Zen** — 7 free models. The extension sends the OpenCode client identity headers the free tier requires.
+- **Cline Free** — 8 models on a Cline account. The key prompt offers `Sign in with Cline (device flow)…` or a pasted access token.
 
-Built-in presets decouple "model settings" from "keys". The data comes from b.ai model cards and DeepSeek / Tencent / Xiaomi official docs, with each thinking level probed empirically; unsupported levels are written as `null` so the UI hides them.
+Any other OpenAI-compatible endpoint:
 
-| Model | ctx / max-out | Modalities | Supported thinking levels |
-|---|---|---|---|
-| hy3 | 256K / 128K | text | off · low · high |
-| mimo-v2.5 | 1M / 128K | text+image | off · high (official: low/medium/high behave identically) |
-| qwen3.8-flash | 1M / 131K | text+image | off · low · medium · xhigh |
-| deepseek-v4.1-flash | 1M / 384K | text+image | off · low · high · max (official DeepSeek V4 tiers; b.ai probed live 2026-09-25) |
-| glm-5.3-flash | 1M / 131K | text+image | low · high · max (no off — GLM always thinks; b.ai probed live 2026-09-25) |
+```
+/multikey → Add pool… → Custom… → provider id, base URL, keys
+```
 
-> Why `null` must be explicit: pi's `getSupportedThinkingLevels` treats `mapped === null` as unsupported and hides that level, but **omitting** it is treated as supported and the level name is sent to the API verbatim; `xhigh` / `max` additionally require an explicit non-null value to be usable.
+The wizard probes `GET <baseUrl>/models` (and `<baseUrl>/v1/models`), falls back
+from `Authorization: Bearer` to `x-api-key`, verifies the key with a small chat
+request, then lets you multi-select models from the server's list. The pool
+is saved only after the wizard completes. Cline endpoints are probed Bearer-only.
+
+Day to day you do nothing: a 429 cools that key (default 20s, `retry-after`
+honored) and the request retries on the next key with no duplicate output; a
+401/403 cools it for 10 minutes; Cline's daily free limit cools until the
+server-reported reset. OAuth-backed Cline keys refresh before each request and
+again on 401, and the rotated refresh token is written back to config. Only when
+every key is exhausted is the error surfaced. Concurrent subagents each hold
+their own lease, so point them at `<pool-id>/<model-id>` and they spread across
+keys automatically. Changes apply immediately; no restart.
 
 ## Configuration
 
-`~/.pi/agent/multikey.json`. On first run it auto-discovers mergeable pools from `~/.pi/agent/models.json` (≥2 providers sharing a baseUrl = you copying the provider per key), and also picks up providers pointing at `api.b.ai`; if nothing is found it generates an empty config.
+Zero config beyond adding a pool. State lives in `~/.pi/agent/multikey.json`
+(override with `MULTIKEY_CONFIG`, legacy alias `KEYPOOL_CONFIG`) and is created
+on first run. Creation scans `~/.pi/agent/models.json` and merges providers that
+share one `baseUrl` (two or more) or point at `api.b.ai`; `$ENV` / `${ENV}` key
+references are resolved, `!command` values are skipped. If nothing matches, an
+empty config is written. A pre-rename `~/.pi/agent/keypool.json` is migrated
+once and kept as a backup.
 
-```jsonc
-{
-  "pools": [
-    {
-      "id": "bai",                          // provider id in pi → bai/hy3
-      "name": "B.AI (Key Pool)",
-      "baseUrl": "https://api.b.ai/v1",
-      "api": "openai-completions",
-      "auth": "bearer",                     // optional: "bearer" (default) or "api-key" (x-api-key header; ignored for api.cline.bot, which rejects it)
-      "compat": { ... },                    // provider-level defaults, merged into every model
-      "cooldownMs": 20000,                  // 429 cooldown
-      "invalidKeyCooldownMs": 600000,       // 401/403 cooldown
-      "keys": [
-        { "key": "sk-...", "label": "key-1", "enabled": true },
-        { "key": "sk-...", "label": "key-2", "enabled": true },
-        { "key": "<access token>", "label": "cline-account", "enabled": true,
-          "credential": { "kind": "cline-oauth", "refreshToken": "...", "accessToken": "...", "expiresAt": 1735689600000 } }
-      ],
-      "models": [ "…preset or hand-configured model definitions…" ]
-    }
-  ]
-}
-```
+| Pool field | Default | Meaning |
+|---|---|---|
+| `id` | required | Pi provider id; models become `<id>/<model-id>` |
+| `baseUrl` | required | Endpoint for the pool |
+| `api` | `openai-completions` | Streaming API type (any registered Pi api) |
+| `auth` | `bearer` | `api-key` sends `x-api-key`; Cline always uses Bearer |
+| `cooldownMs` | `20000` | Cooldown after a 429 |
+| `invalidKeyCooldownMs` | `600000` | Cooldown after a 401/403 |
+| `keys[]` | required | `{ key, label?, enabled? }`, or a Cline `credential` |
+| `models[]` | required | Model definitions (`id`, `api`, `baseUrl`, `contextWindow`, `maxTokens`, `input`, `thinkingLevelMap`, `compat`, `cost`) |
+| `compat`, `headers` | — | Provider-level defaults merged into every model / sent on every request |
 
-To add nvidia / other providers later: `/multikey` → `Add pool…` (Custom), or edit the JSON directly and `Reload config from disk`.
+A model spec that omits sizing gets `contextWindow` 128000, `maxTokens` 16384,
+`input` `["text"]`, zero cost, `reasoning` true. Models whose `api` differs from
+the pool's are registered under a second provider id, `<pool-id>.<api>`, sharing
+the same keys and cooldowns.
 
-### Adding a custom pool (no questions about API types)
+## Security
 
-The custom wizard only asks for the essentials — **provider id, base URL, key(s)**. It then probes the endpoint:
+The extension runs in-process with your OS user's permissions.
 
-1. It fetches `<baseUrl>/models` (and `<baseUrl>/v1/models` as a fallback) with `Authorization: Bearer`; on 401/403 it retries with `x-api-key`. `api.cline.bot` is the exception — it rejects `x-api-key` and accepts the key only as `Authorization: Bearer <token>`, so Cline endpoints are probed Bearer-only.
-2. `/models` is public on some gateways, so it also sends a tiny 1-token chat request to verify the key. If both header styles are rejected there but a dummy key passes, the endpoint simply doesn't check keys (open endpoint) and the pool is saved with the default Bearer auth.
-3. You multi-select the models to add straight from the server's list. Context window / input modes / max output found in the model metadata are adopted; everything else gets safe defaults (128k context, text input, 16k max output, zero cost).
-4. Optionally tune the common params (context size, input modes, max output) per model — or skip and edit them later via the Models menu. Anything advanced (thinking maps, compat, cost) you edit in `multikey.json` and hit *Reload config from disk*.
+- API keys and Cline refresh/access tokens are stored in plaintext in
+  `~/.pi/agent/multikey.json`. Run `chmod 600 ~/.pi/agent/multikey.json`.
+- Network access: the endpoints you configure; `https://opencode.ai/update/api/latest/cli`
+  when a Zen pool exists (to resolve the client version its free tier gates on);
+  `api.workos.com` and `api.cline.bot` during Cline sign-in.
+- The custom and preset wizards send `GET <baseUrl>/models` and, when a model
+  id is known, a small chat request to verify a key.
+- During Cline device-flow sign-in it spawns your OS opener (`xdg-open`, `open`,
+  or `cmd /c start`) for the verification URL. No other shells are invoked.
+- No telemetry.
 
-The detected header style is stored as `"auth": "api-key"` only when the endpoint proved to want `x-api-key`; the default is Bearer. The pool is saved **only after** this completes, so a cancelled wizard never leaves a half-configured provider behind.
-
-## Management UI
-
-```
-/multikey
-├─ Status                     live status: in-flight / cooldown / 429 count per key
-├─ Manage pools…              pools with an unknown api type are marked ⚠ broken; incomplete pools (incomplete)
-│  ├─ Keys…                   add keys one per line; delete / edit / disable
-│  ├─ Models…                 fetch from /models (multi-select) or add manually; edit contextWindow,
-│  │                         maxTokens, modalities, reasoning, thinkingLevelMap, compat, cost
-│  ├─ Endpoint & settings…   baseUrl, api type, auth style, cooldown durations, headers
-│  └─ Delete pool
-├─ Add pool…
-│  ├─ Preset: B.AI           all model settings preloaded; paste keys (verified by a probe) and you're done
-│  ├─ Preset: OpenCode Zen   free-tier models preloaded (8 models); paste keys and you're done
-│  └─ Custom…                id + base URL + keys, then auto-probe, model multi-select, safe defaults
-└─ Reload config from disk
-```
-
-Changes take effect immediately (the provider is re-registered) — no restart needed.
-
-## How it works
-
-- The extension registers a provider via `pi.registerProvider()` with a custom `streamSimple`.
-- Each request leases one key from the pool (`options.apiKey` overrides), and once the HTTP response headers arrive:
-  - 429 → that key is cooled down (default 20s, honoring `retry-after`) and the request immediately retries with the next key (no duplicated output);
-  - Cline daily free limit (429 + `"free limit reached on model"` in the body) → that key cools down until the server-reported reset time (hours, not seconds) and the request retries with the next key;
-  - 401/403 → that key gets a long cooldown (default 10 minutes) and the request retries with the next key; for OAuth-backed keys (Cline), a 401 first forces one token refresh + same-key retry before any cooldown;
-  - other errors → handed back to pi's own retry mechanism.
-- OAuth-backed keys (Cline accounts) resolve a fresh access token from their stored refresh token before every request (single-flight per account, so concurrent subagents share one refresh), and every rotation of the refresh token is persisted back to `multikey.json`.
-- Only when every key is exhausted does it surface the 429 upward, letting pi's own backoff retry as a safety net (by then the earliest cooldown has usually expired).
-
-## Security note
-
-Keys are stored in plaintext at `~/.pi/agent/multikey.json`; recommended:
+## Update / remove / enable-disable
 
 ```bash
-chmod 600 ~/.pi/agent/multikey.json
+pi update --extensions          # update every installed package
+pi update npm:pi-multikey       # update one package
+pi list                         # list installed packages
+pi remove npm:pi-multikey       # remove from settings
+pi config                       # enable/disable package resources in a TUI
 ```
+
+## Compatibility
+
+- Pi 1.0.2 — verified by loading the entry file: `pi --offline -ne -e ./index.ts --list-models`.
+- Node 24 — `npm test` passes on 24.20.0.
+- Linux verified. macOS and Windows: TODO: confirm.
+- Peer dependencies (provided by Pi at runtime, declared as `*`):
+  `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`.
+
+## Development
+
+```bash
+git clone https://github.com/kslamph/multikey
+cd multikey
+npm test                             # node --test *.test.ts (offline)
+pi -e ./index.ts --offline --list-models
+```
+
+Running Pi from inside the repo loads the working copy in place; `pi -e ./index.ts`
+loads only the entry file for one invocation.
+
+## License
+
+MIT — see [LICENSE](./LICENSE).
+
+Cline account auth and the Cline client header set are ported from the cline SDK;
+OpenCode Zen identity headers follow opencode's `model-request.ts`. Preset model
+specs come from provider model cards and docs, with thinking levels probed live.
